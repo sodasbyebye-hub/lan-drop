@@ -217,7 +217,7 @@ test("公共聊天文字和文件会保留并在重启后可继续下载", async
   }
 });
 
-test("拒绝超限文件且不会写入文件柜", async () => {
+test("拒绝无效文件大小且不会写入文件柜", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "lan-drop-limit-"));
   const { server, baseUrl } = await createTestServer(dataDir);
   try {
@@ -229,11 +229,11 @@ test("拒绝超限文件且不会写入文件柜", async () => {
         "X-Device-Name": encodeURIComponent("测试电脑"),
         "X-Owner-Token": "owner-token-that-is-long-enough",
         "X-File-Name": "large.bin",
-        "X-File-Size": String(2 * 1024 * 1024 * 1024 + 1),
+        "X-File-Size": "-1",
       },
       body: Buffer.alloc(0),
     });
-    assert.equal(response.status, 413);
+    assert.equal(response.status, 400);
     const listed = await fetch(`${baseUrl}/api/files`).then((item) => item.json());
     assert.equal(listed.files.length, 0);
   } finally {

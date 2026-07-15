@@ -181,8 +181,6 @@ function App() {
 
   function addFiles(input: FileList | File[]) {
     const selected = Array.from(input);
-    const oversized = selected.find((file) => file.size > 2 * 1024 * 1024 * 1024);
-    if (oversized) return showToast(`${oversized.name} 超过 2GB，无法发送`);
     setFiles((current) => [...current, ...selected].slice(0, 20));
   }
 

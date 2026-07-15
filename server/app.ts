@@ -19,7 +19,8 @@ import { pipeline } from "node:stream/promises";
 import express, { type Request, type Response } from "express";
 import { Server as SocketServer, type Socket } from "socket.io";
 
-export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
+// File sizes remain JavaScript-safe integers; there is no product-level size cap.
+export const MAX_FILE_SIZE = Number.MAX_SAFE_INTEGER;
 const PUBLIC_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const PRIVATE_RETENTION_MS = 60 * 60 * 1000;
 const CHAT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -448,7 +449,7 @@ export function createLanServer(options: ServerOptions = {}) {
       name: "局域网快传",
       peers: peers.size,
       files: publicFiles.length,
-      maxFileSize: MAX_FILE_SIZE,
+      maxFileSize: null,
       retentionMs: PUBLIC_RETENTION_MS,
     });
   });
@@ -472,7 +473,6 @@ export function createLanServer(options: ServerOptions = {}) {
     if (!deviceId || ownerToken.length < 16) return apiError(res, 400, "INVALID_CLIENT", "设备信息无效");
     if (!Number.isSafeInteger(declaredSize) || declaredSize < 0)
       return apiError(res, 400, "INVALID_SIZE", "文件大小无效");
-    if (declaredSize > MAX_FILE_SIZE) return apiError(res, 413, "FILE_TOO_LARGE", "单个文件不能超过 2GB");
     if (!beginUpload(deviceId)) return apiError(res, 429, "TOO_MANY_UPLOADS", "同时上传的文件过多，请稍后再试");
 
     const id = randomUUID();
@@ -737,8 +737,8 @@ export function createLanServer(options: ServerOptions = {}) {
         const files: ChatFileRecord[] = [];
         for (const input of inputFiles) {
           const size = Number(input?.size);
-          if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_SIZE)
-            return ack?.({ ok: false, code: "FILE_TOO_LARGE", message: "单个文件不能超过 2GB" });
+          if (!Number.isSafeInteger(size) || size < 0)
+            return ack?.({ ok: false, code: "INVALID_SIZE", message: "文件大小无效" });
           const id = randomUUID();
           files.push({
             id,
@@ -782,8 +782,8 @@ export function createLanServer(options: ServerOptions = {}) {
         if (!target) return ack?.({ ok: false, code: "DEVICE_OFFLINE", message: "接收设备已离线" });
         if (toDeviceId === deviceId) return ack?.({ ok: false, code: "INVALID_TARGET", message: "不能发送给自己" });
         if (!chatFiles.length) return ack?.({ ok: false, code: "NO_FILES", message: "请选择文件" });
-        if (chatFiles.some((file) => !Number.isSafeInteger(file.size) || Number(file.size) < 0 || Number(file.size) > MAX_FILE_SIZE))
-          return ack?.({ ok: false, code: "FILE_TOO_LARGE", message: "单个文件不能超过 2GB" });
+        if (chatFiles.some((file) => !Number.isSafeInteger(file.size) || Number(file.size) < 0))
+          return ack?.({ ok: false, code: "INVALID_SIZE", message: "文件大小无效" });
 
         const now = Date.now();
         const transfer: TransferRecord = {
@@ -830,8 +830,8 @@ export function createLanServer(options: ServerOptions = {}) {
         if (!target) return ack?.({ ok: false, code: "DEVICE_OFFLINE", message: "接收设备已离线" });
         if (toDeviceId === deviceId) return ack?.({ ok: false, code: "INVALID_TARGET", message: "不能发送给自己" });
         if (!offeredFiles.length) return ack?.({ ok: false, code: "NO_FILES", message: "请选择文件" });
-        if (offeredFiles.some((file) => !Number.isSafeInteger(file.size) || Number(file.size) < 0 || Number(file.size) > MAX_FILE_SIZE))
-          return ack?.({ ok: false, code: "FILE_TOO_LARGE", message: "单个文件不能超过 2GB" });
+        if (offeredFiles.some((file) => !Number.isSafeInteger(file.size) || Number(file.size) < 0))
+          return ack?.({ ok: false, code: "INVALID_SIZE", message: "文件大小无效" });
 
         const now = Date.now();
         const transfer: TransferRecord = {
