@@ -169,6 +169,54 @@ test("聊天文件消息会直接上传并在对方会话中可下载", async ()
   }
 });
 
+test("公共聊天文字和文件会保留并在重启后可继续下载", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "lan-drop-durable-chat-"));
+  let running = await createTestServer(dataDir);
+  const sender = connectSocket(running.baseUrl, { auth: { deviceId: "group-sender", name: "发送设备" }, transports: ["websocket"] });
+  const receiver = connectSocket(running.baseUrl, { auth: { deviceId: "group-receiver", name: "接收设备" }, transports: ["websocket"] });
+  try {
+    await Promise.all([socketEvent(sender, "connect"), socketEvent(receiver, "connect")]);
+    const textPromise = socketEvent(receiver, "chat:message");
+    const text = await emitAck(sender, "chat:message", { public: true, text: "公共聊天会保留 30 天" });
+    assert.equal(text.ok, true);
+    assert.equal((await textPromise).message.conversationId, "public");
+
+    const filePromise = socketEvent(receiver, "chat:message");
+    const prepared = await emitAck(sender, "chat:file:prepare", {
+      public: true,
+      files: [{ name: "group.txt", size: 5, contentType: "text/plain" }],
+    });
+    assert.equal(prepared.ok, true);
+    const fileMessage = await filePromise;
+    assert.equal(fileMessage.message.files[0].ready, false);
+    const file = prepared.message.files[0];
+    const upload = await fetch(`${running.baseUrl}/api/chat-files/${prepared.message.id}/${file.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain", "X-Device-Id": "group-sender", "X-Upload-Token": prepared.uploadToken, "X-File-Size": "5" },
+      body: Buffer.from("hello"),
+    });
+    assert.equal(upload.status, 201);
+    const download = await fetch(`${running.baseUrl}/api/chat-files/${prepared.message.id}/${file.id}/download?deviceId=group-receiver`);
+    assert.equal(await download.text(), "hello");
+
+    sender.disconnect();
+    receiver.disconnect();
+    await running.server.stop();
+    running = await createTestServer(dataDir);
+    const restored = connectSocket(running.baseUrl, { auth: { deviceId: "group-receiver", name: "接收设备" }, transports: ["websocket"] });
+    const historyPromise = socketEvent(restored, "chat:history");
+    await socketEvent(restored, "connect");
+    const history = await historyPromise;
+    assert.equal(history.messages.filter((message) => message.conversationId === "public").length, 2);
+    restored.disconnect();
+  } finally {
+    sender.disconnect();
+    receiver.disconnect();
+    await running.server.stop().catch(() => undefined);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("拒绝超限文件且不会写入文件柜", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "lan-drop-limit-"));
   const { server, baseUrl } = await createTestServer(dataDir);

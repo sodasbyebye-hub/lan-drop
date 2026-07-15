@@ -20,8 +20,9 @@ import express, { type Request, type Response } from "express";
 import { Server as SocketServer, type Socket } from "socket.io";
 
 export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
-const PUBLIC_RETENTION_MS = 24 * 60 * 60 * 1000;
+const PUBLIC_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const PRIVATE_RETENTION_MS = 60 * 60 * 1000;
+const CHAT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const COMPLETED_CLEANUP_MS = 60 * 1000;
 const FREE_SPACE_RESERVE = 64 * 1024 * 1024;
 const MAX_ACTIVE_UPLOADS = 4;
@@ -73,13 +74,28 @@ type PeerRecord = {
   sockets: Set<string>;
 };
 
-type TextChatRecord = {
+type ChatFileRecord = {
   id: string;
+  name: string;
+  size: number;
+  contentType: string;
+  storedName: string;
+  received: number;
+  ready: boolean;
+};
+
+type DurableChatRecord = {
+  id: string;
+  conversationId: string;
   fromDeviceId: string;
   fromName: string;
-  toDeviceId: string;
-  text: string;
+  toDeviceId?: string;
+  text?: string;
+  files?: ChatFileRecord[];
+  status: "uploading" | "ready" | "error";
   createdAt: number;
+  expiresAt: number;
+  uploadToken?: string;
 };
 
 type ServerOptions = {
@@ -176,8 +192,10 @@ export function createLanServer(options: ServerOptions = {}) {
   const dataDir = options.dataDir ?? path.join(rootDir, "data");
   const publicDir = path.join(dataDir, "public");
   const privateDir = path.join(dataDir, "private");
+  const chatDir = path.join(dataDir, "chat");
   const tempDir = path.join(dataDir, "tmp");
   const indexPath = path.join(dataDir, "files.json");
+  const chatIndexPath = path.join(dataDir, "chat.json");
   const port = options.port ?? Number(process.env.PORT || 3000);
   const host = options.host ?? "0.0.0.0";
   const serveFrontend = options.serveFrontend ?? true;
@@ -193,7 +211,7 @@ export function createLanServer(options: ServerOptions = {}) {
   let publicFiles: PublicFileRecord[] = [];
   const transfers = new Map<string, TransferRecord>();
   const peers = new Map<string, PeerRecord>();
-  const textMessages: TextChatRecord[] = [];
+  let durableChatMessages: DurableChatRecord[] = [];
   const activeByDevice = new Map<string, number>();
   let activeUploads = 0;
   let persistChain = Promise.resolve();
@@ -210,6 +228,16 @@ export function createLanServer(options: ServerOptions = {}) {
     return persistChain;
   }
 
+  async function persistChatMessages() {
+    persistChain = persistChain.then(async () => {
+      const snapshot = JSON.stringify(durableChatMessages, null, 2);
+      const temporary = `${chatIndexPath}.${randomUUID()}.tmp`;
+      await writeFile(temporary, snapshot, "utf8");
+      await rename(temporary, chatIndexPath);
+    });
+    return persistChain;
+  }
+
   async function safeRemove(filePath: string) {
     await rm(filePath, { force: true }).catch(() => undefined);
   }
@@ -218,6 +246,7 @@ export function createLanServer(options: ServerOptions = {}) {
     await Promise.all([
       mkdir(publicDir, { recursive: true }),
       mkdir(privateDir, { recursive: true }),
+      mkdir(chatDir, { recursive: true }),
       mkdir(tempDir, { recursive: true }),
     ]);
 
@@ -226,6 +255,12 @@ export function createLanServer(options: ServerOptions = {}) {
       publicFiles = Array.isArray(parsed) ? parsed : [];
     } catch {
       publicFiles = [];
+    }
+    try {
+      const parsed = JSON.parse(await readFile(chatIndexPath, "utf8")) as DurableChatRecord[];
+      durableChatMessages = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      durableChatMessages = [];
     }
 
     const now = Date.now();
@@ -251,7 +286,29 @@ export function createLanServer(options: ServerOptions = {}) {
     }
     for (const temporary of await readdir(tempDir)) await safeRemove(path.join(tempDir, temporary));
     for (const privateFile of await readdir(privateDir)) await safeRemove(path.join(privateDir, privateFile));
+    const validMessages: DurableChatRecord[] = [];
+    for (const message of durableChatMessages) {
+      if (message.expiresAt <= now) continue;
+      const files = message.files ?? [];
+      let complete = true;
+      for (const file of files) {
+        try {
+          const info = await stat(path.join(chatDir, path.basename(file.storedName)));
+          if (!info.isFile() || info.size !== file.size) complete = false;
+        } catch {
+          complete = false;
+        }
+      }
+      if (!complete && files.length) continue;
+      validMessages.push({ ...message, status: files.length ? "ready" : message.status, files: files.map((file) => ({ ...file, ready: true, received: file.size })) });
+    }
+    durableChatMessages = validMessages;
+    const knownChatFiles = new Set(durableChatMessages.flatMap((message) => (message.files ?? []).map((file) => file.storedName)));
+    for (const storedName of await readdir(chatDir)) {
+      if (!knownChatFiles.has(storedName)) await safeRemove(path.join(chatDir, storedName));
+    }
     await persistPublicFiles();
+    await persistChatMessages();
   }
 
   async function hasSpace(size: number) {
@@ -332,6 +389,14 @@ export function createLanServer(options: ServerOptions = {}) {
       await persistPublicFiles();
       for (const file of expiredPublic) io.emit("file:deleted", { id: file.id });
     }
+    const expiredMessages = durableChatMessages.filter((message) => message.expiresAt <= now);
+    if (expiredMessages.length) {
+      const expiredIds = new Set(expiredMessages.map((message) => message.id));
+      durableChatMessages = durableChatMessages.filter((message) => !expiredIds.has(message.id));
+      await Promise.all(expiredMessages.flatMap((message) => (message.files ?? []).map((file) => safeRemove(path.join(chatDir, file.storedName)))));
+      await persistChatMessages();
+      for (const message of expiredMessages) emitChatMessage("chat:message:deleted", { id: message.id, conversationId: message.conversationId }, message);
+    }
     for (const transfer of [...transfers.values()]) {
       if (transfer.expiresAt <= now) {
         io.to(`device:${transfer.fromDeviceId}`).to(`device:${transfer.toDeviceId}`).emit("transfer:error", {
@@ -350,6 +415,25 @@ export function createLanServer(options: ServerOptions = {}) {
       return peer;
     });
     io.emit("peers:update", view);
+  }
+
+  function chatView(message: DurableChatRecord) {
+    const { uploadToken: _uploadToken, ...view } = message;
+    void _uploadToken;
+    return view;
+  }
+
+  function conversationIdFor(fromDeviceId: string, toDeviceId?: string) {
+    return toDeviceId ? [fromDeviceId, toDeviceId].sort().join(":") : "public";
+  }
+
+  function emitChatMessage(event: string, payload: Record<string, unknown>, message: DurableChatRecord) {
+    if (message.toDeviceId) io.to(`device:${message.fromDeviceId}`).to(`device:${message.toDeviceId}`).emit(event, payload);
+    else io.emit(event, payload);
+  }
+
+  function mayAccessMessage(message: DurableChatRecord, deviceId: string) {
+    return !message.toDeviceId || message.fromDeviceId === deviceId || message.toDeviceId === deviceId;
   }
 
   function socketDevice(socket: Socket) {
@@ -453,6 +537,61 @@ export function createLanServer(options: ServerOptions = {}) {
     res.status(204).end();
   });
 
+  app.post("/api/chat-files/:messageId/:fileId", async (req, res) => {
+    const message = durableChatMessages.find((item) => item.id === req.params.messageId);
+    const file = message?.files?.find((item) => item.id === req.params.fileId);
+    const deviceId = cleanName(headerValue(req, "x-device-id"), "", 80);
+    const uploadToken = headerValue(req, "x-upload-token");
+    if (!message || !file) return apiError(res, 404, "MESSAGE_NOT_FOUND", "聊天文件不存在或已过期");
+    if (message.fromDeviceId !== deviceId || message.uploadToken !== uploadToken)
+      return apiError(res, 403, "FORBIDDEN", "无权上传此文件");
+    if (message.expiresAt <= Date.now()) return apiError(res, 410, "MESSAGE_EXPIRED", "聊天文件已过期");
+    if (file.ready) return apiError(res, 409, "ALREADY_UPLOADED", "文件已经上传");
+    if (!beginUpload(deviceId)) return apiError(res, 429, "TOO_MANY_UPLOADS", "同时上传的文件过多，请稍后再试");
+    const destination = path.join(chatDir, file.storedName);
+    try {
+      if (!(await hasSpace(file.size))) return apiError(res, 507, "DISK_FULL", "主机磁盘空间不足");
+      await receiveStream(req, destination, file.size, (received) => {
+        file.received = received;
+        emitChatMessage("chat:message:updated", { message: chatView(message) }, message);
+      });
+      file.received = file.size;
+      file.ready = true;
+      if (message.files?.every((item) => item.ready)) {
+        message.status = "ready";
+        delete message.uploadToken;
+      }
+      await persistChatMessages();
+      emitChatMessage("chat:message:updated", { message: chatView(message) }, message);
+      res.status(201).json({ ok: true });
+    } catch {
+      message.status = "error";
+      await persistChatMessages();
+      emitChatMessage("chat:message:updated", { message: chatView(message) }, message);
+      apiError(res, 400, "UPLOAD_FAILED", "文件上传中断，请重试");
+    } finally {
+      endUpload(deviceId);
+    }
+  });
+
+  app.get("/api/chat-files/:messageId/:fileId/download", async (req, res) => {
+    const message = durableChatMessages.find((item) => item.id === req.params.messageId);
+    const file = message?.files?.find((item) => item.id === req.params.fileId);
+    const deviceId = cleanName(req.query.deviceId, "", 80);
+    if (!message || !file || !file.ready || message.expiresAt <= Date.now() || !mayAccessMessage(message, deviceId))
+      return apiError(res, 404, "FILE_NOT_FOUND", "文件不存在或已过期");
+    const filePath = path.join(chatDir, file.storedName);
+    try {
+      await access(filePath);
+      res.setHeader("Content-Type", file.contentType || "application/octet-stream");
+      res.setHeader("Content-Length", String(file.size));
+      res.setHeader("Content-Disposition", contentDisposition(file.name));
+      createReadStream(filePath).on("error", () => res.destroy()).pipe(res);
+    } catch {
+      apiError(res, 404, "FILE_NOT_FOUND", "文件不存在或已过期");
+    }
+  });
+
   app.post("/api/transfers/:transferId/files/:fileId", async (req, res) => {
     const transfer = transfers.get(req.params.transferId);
     const file = transfer?.files.find((item) => item.id === req.params.fileId);
@@ -545,7 +684,7 @@ export function createLanServer(options: ServerOptions = {}) {
     peers.set(deviceId, peer);
     emitPeers();
     socket.emit("chat:history", {
-      messages: textMessages.filter((message) => message.fromDeviceId === deviceId || message.toDeviceId === deviceId),
+      messages: durableChatMessages.filter((message) => mayAccessMessage(message, deviceId)).map(chatView),
     });
 
     socket.on("peer:update", (payload: { name?: string }, ack?: Ack) => {
@@ -556,26 +695,80 @@ export function createLanServer(options: ServerOptions = {}) {
       ack?.({ ok: true, name: nextName });
     });
 
-    socket.on("chat:message", (payload: { toDeviceId?: string; text?: string }, ack?: Ack) => {
+    socket.on("chat:message", (payload: { toDeviceId?: string; public?: boolean; text?: string }, ack?: Ack) => {
       const toDeviceId = cleanName(payload?.toDeviceId, "", 80);
-      const target = peers.get(toDeviceId);
+      const isPublic = payload?.public === true;
+      const target = isPublic ? undefined : peers.get(toDeviceId);
       const text = cleanName(payload?.text, "", 1000);
-      if (!target) return ack?.({ ok: false, code: "DEVICE_OFFLINE", message: "接收设备已离线" });
-      if (toDeviceId === deviceId) return ack?.({ ok: false, code: "INVALID_TARGET", message: "不能发送给自己" });
+      if (!isPublic && !target) return ack?.({ ok: false, code: "DEVICE_OFFLINE", message: "接收设备已离线" });
+      if (!isPublic && toDeviceId === deviceId) return ack?.({ ok: false, code: "INVALID_TARGET", message: "不能发送给自己" });
       if (!text) return ack?.({ ok: false, code: "EMPTY_MESSAGE", message: "请输入消息内容" });
-      const message: TextChatRecord = {
+      const now = Date.now();
+      const message: DurableChatRecord = {
         id: randomUUID(),
+        conversationId: conversationIdFor(deviceId, isPublic ? undefined : toDeviceId),
         fromDeviceId: deviceId,
         fromName: peer.name,
-        toDeviceId,
+        ...(isPublic ? {} : { toDeviceId }),
         text,
-        createdAt: Date.now(),
+        status: "ready",
+        createdAt: now,
+        expiresAt: now + CHAT_RETENTION_MS,
       };
-      textMessages.push(message);
-      if (textMessages.length > 300) textMessages.splice(0, textMessages.length - 300);
-      io.to(`device:${deviceId}`).to(`device:${toDeviceId}`).emit("chat:message", { message });
-      ack?.({ ok: true, message });
+      durableChatMessages.push(message);
+      void persistChatMessages();
+      emitChatMessage("chat:message", { message: chatView(message) }, message);
+      ack?.({ ok: true, message: chatView(message) });
     });
+
+    socket.on(
+      "chat:file:prepare",
+      (
+        payload: { toDeviceId?: string; public?: boolean; files?: Array<{ name?: string; size?: number; contentType?: string }> },
+        ack?: Ack,
+      ) => {
+        const toDeviceId = cleanName(payload?.toDeviceId, "", 80);
+        const isPublic = payload?.public === true;
+        const target = isPublic ? undefined : peers.get(toDeviceId);
+        const inputFiles = Array.isArray(payload?.files) ? payload.files.slice(0, 20) : [];
+        if (!isPublic && !target) return ack?.({ ok: false, code: "DEVICE_OFFLINE", message: "接收设备已离线" });
+        if (!isPublic && toDeviceId === deviceId) return ack?.({ ok: false, code: "INVALID_TARGET", message: "不能发送给自己" });
+        if (!inputFiles.length) return ack?.({ ok: false, code: "NO_FILES", message: "请选择文件" });
+        const files: ChatFileRecord[] = [];
+        for (const input of inputFiles) {
+          const size = Number(input?.size);
+          if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_SIZE)
+            return ack?.({ ok: false, code: "FILE_TOO_LARGE", message: "单个文件不能超过 2GB" });
+          const id = randomUUID();
+          files.push({
+            id,
+            name: cleanName(input?.name, "未命名文件", 180),
+            size,
+            contentType: cleanName(input?.contentType, "application/octet-stream", 120),
+            storedName: `${id}.bin`,
+            received: 0,
+            ready: false,
+          });
+        }
+        const now = Date.now();
+        const message: DurableChatRecord = {
+          id: randomUUID(),
+          conversationId: conversationIdFor(deviceId, isPublic ? undefined : toDeviceId),
+          fromDeviceId: deviceId,
+          fromName: peer.name,
+          ...(isPublic ? {} : { toDeviceId }),
+          files,
+          status: "uploading",
+          createdAt: now,
+          expiresAt: now + CHAT_RETENTION_MS,
+          uploadToken: randomBytes(24).toString("hex"),
+        };
+        durableChatMessages.push(message);
+        void persistChatMessages();
+        emitChatMessage("chat:message", { message: chatView(message) }, message);
+        ack?.({ ok: true, message: chatView(message), uploadToken: message.uploadToken });
+      },
+    );
 
     socket.on(
       "chat:prepare",
