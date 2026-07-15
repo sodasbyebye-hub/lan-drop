@@ -97,6 +97,7 @@ function App() {
   const [selectedPeer, setSelectedPeer] = useState("");
   const [isPublicChat, setIsPublicChat] = useState(true);
   const [messages, setMessages] = useState<ChatRecord[]>([]);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
@@ -107,6 +108,7 @@ function App() {
   const socketRef = useRef<Socket | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const activeConversationRef = useRef("");
 
   const otherPeers = useMemo(() => peers.filter((peer) => peer.deviceId !== identity.deviceId), [peers, identity.deviceId]);
   const activePeer = otherPeers.find((peer) => peer.deviceId === selectedPeer);
@@ -137,6 +139,10 @@ function App() {
   }, [activeConversation, visibleMessages.length]);
 
   useEffect(() => {
+    activeConversationRef.current = activeConversation;
+  }, [activeConversation]);
+
+  useEffect(() => {
     void QRCode.toDataURL(window.location.href, { width: 320, margin: 1, color: { dark: "#153941", light: "#ffffff" } }).then(setQrData);
   }, []);
 
@@ -151,7 +157,12 @@ function App() {
       setSelectedPeer((current) => available.some((peer) => peer.deviceId === current) ? current : available[0]?.deviceId || "");
     });
     socket.on("chat:history", ({ messages: history }: { messages: ChatRecord[] }) => setMessages(history));
-    socket.on("chat:message", ({ message }: { message: ChatRecord }) => upsertMessage(message));
+    socket.on("chat:message", ({ message }: { message: ChatRecord }) => {
+      upsertMessage(message);
+      if (message.fromDeviceId !== identity.deviceId && message.conversationId !== activeConversationRef.current) {
+        setUnreadCounts((current) => ({ ...current, [message.conversationId]: (current[message.conversationId] || 0) + 1 }));
+      }
+    });
     socket.on("chat:message:updated", ({ message }: { message: ChatRecord }) => upsertMessage(message));
     socket.on("chat:message:deleted", ({ id }: { id: string }) => setMessages((current) => current.filter((message) => message.id !== id)));
     return () => {
@@ -163,12 +174,25 @@ function App() {
   function choosePublicChat() {
     setIsPublicChat(true);
     setFiles([]);
+    setUnreadCounts((current) => {
+      if (!current.public) return current;
+      const next = { ...current };
+      delete next.public;
+      return next;
+    });
   }
 
   function choosePeer(peer: Peer) {
     setSelectedPeer(peer.deviceId);
     setIsPublicChat(false);
     setFiles([]);
+    const chatId = conversationId(identity.deviceId, peer.deviceId);
+    setUnreadCounts((current) => {
+      if (!current[chatId]) return current;
+      const next = { ...current };
+      delete next[chatId];
+      return next;
+    });
   }
 
   function saveName() {
@@ -253,14 +277,14 @@ function App() {
         <aside className="chat-sidebar">
           <div className="sidebar-heading"><strong>附近设备</strong><button type="button" onClick={() => socketRef.current?.emit("peer:update", {})} aria-label="刷新设备"><Wifi size={17} /></button></div>
           <button className={`public-chat-item ${isPublicChat ? "active" : ""}`} type="button" onClick={choosePublicChat}>
-            <span className="group-avatar"><Users size={21} /></span><span><strong>公共聊天</strong><small>所有局域网设备都能看到</small></span>{isPublicChat && <Check size={17} />}
+            <span className="group-avatar"><Users size={21} /></span><span><strong>公共聊天</strong><small>所有局域网设备都能看到</small></span>{unreadCounts.public ? <span className="unread-badge">{unreadCounts.public > 99 ? "99+" : unreadCounts.public}</span> : null}{isPublicChat && <Check size={17} />}
           </button>
           <div className="device-items">
             <div className="device-label">设备聊天</div>
             {otherPeers.length ? otherPeers.map((peer) => (
               <button className={`device-item ${!isPublicChat && selectedPeer === peer.deviceId ? "active" : ""}`} type="button" key={peer.deviceId} onClick={() => choosePeer(peer)}>
                 <span className="letter-avatar">{avatarLetter(peer.name)}</span>
-                <span><strong>{peer.name}</strong><small><i /> 在线</small></span>
+                <span><strong>{peer.name}</strong><small><i /> 在线</small></span>{unreadCounts[conversationId(identity.deviceId, peer.deviceId)] ? <span className="unread-badge">{unreadCounts[conversationId(identity.deviceId, peer.deviceId)] > 99 ? "99+" : unreadCounts[conversationId(identity.deviceId, peer.deviceId)]}</span> : null}
               </button>
             )) : <p className="no-devices">等待其他设备加入同一局域网</p>}
           </div>
