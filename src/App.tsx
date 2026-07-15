@@ -39,6 +39,11 @@ type ChatRecord = {
 
 const DEVICE_KEY = "lan-drop-device-id";
 const NAME_KEY = "lan-drop-device-name";
+const NAME_VERSION_KEY = "lan-drop-device-name-version";
+const NAME_VERSION = "whimsical-zh-v1";
+
+const QUIRKY_PREFIXES = ["会飞的", "倒立的", "发光的", "迷路的", "会唱歌的", "隐形的", "熬夜的", "跳舞的", "生气的", "爱摸鱼的", "打嗝的", "戴墨镜的"];
+const QUIRKY_NOUNS = ["西瓜", "章鱼", "土豆", "拖鞋", "企鹅", "海豹", "蘑菇", "鲨鱼", "月亮", "煎饼", "胡萝卜", "小笼包", "仙人掌", "河马", "云朵"];
 
 function makeId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -51,11 +56,18 @@ function makeIdentity() {
     deviceId = makeId();
     localStorage.setItem(DEVICE_KEY, deviceId);
   }
-  const isMobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
-  const defaultName = isMobile ? "我的手机" : "我的电脑";
-  const name = localStorage.getItem(NAME_KEY) || defaultName;
+  const savedName = localStorage.getItem(NAME_KEY);
+  const version = localStorage.getItem(NAME_VERSION_KEY);
+  const name = savedName && version === NAME_VERSION ? savedName : makeQuirkyName();
   localStorage.setItem(NAME_KEY, name);
+  localStorage.setItem(NAME_VERSION_KEY, NAME_VERSION);
   return { deviceId, name };
+}
+
+function makeQuirkyName() {
+  const prefix = QUIRKY_PREFIXES[Math.floor(Math.random() * QUIRKY_PREFIXES.length)];
+  const noun = QUIRKY_NOUNS[Math.floor(Math.random() * QUIRKY_NOUNS.length)];
+  return `${prefix}${noun}`;
 }
 
 function formatBytes(bytes: number) {
