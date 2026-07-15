@@ -296,6 +296,21 @@ function App() {
             <button className="back-button" type="button" aria-label="返回设备列表"><ChevronLeft size={21} /></button>
             <span className={isPublicChat ? "conversation-avatar group" : "conversation-avatar"}>{isPublicChat ? <Users size={23} /> : avatarLetter(activePeer?.name || "?")}</span>
             <div><strong>{activeTitle}</strong><small>{isPublicChat ? `${otherPeers.length + 1} 台设备可参与 · 保存 30 天` : activePeer ? <><i /> 在线</> : "从左侧选择设备"}</small></div>
+            <select
+              className="mobile-chat-picker"
+              value={isPublicChat ? "public" : selectedPeer}
+              onChange={(event) => {
+                if (event.target.value === "public") choosePublicChat();
+                else {
+                  const peer = otherPeers.find((item) => item.deviceId === event.target.value);
+                  if (peer) choosePeer(peer);
+                }
+              }}
+              aria-label="选择聊天对象"
+            >
+              <option value="public">公共聊天</option>
+              {otherPeers.map((peer) => <option key={peer.deviceId} value={peer.deviceId}>{peer.name}</option>)}
+            </select>
           </div>
 
           <div className="message-area" ref={messagesRef} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
