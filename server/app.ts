@@ -85,6 +85,12 @@ type ChatFileRecord = {
   ready: boolean;
 };
 
+type ChatReceipt = {
+  deviceId: string;
+  name: string;
+  at: number;
+};
+
 type DurableChatRecord = {
   id: string;
   conversationId: string;
@@ -96,6 +102,8 @@ type DurableChatRecord = {
   status: "uploading" | "ready" | "error";
   createdAt: number;
   expiresAt: number;
+  readBy?: ChatReceipt[];
+  downloadedBy?: ChatReceipt[];
   uploadToken?: string;
 };
 
@@ -583,6 +591,11 @@ export function createLanServer(options: ServerOptions = {}) {
     const filePath = path.join(chatDir, file.storedName);
     try {
       await access(filePath);
+      if (deviceId && deviceId !== message.fromDeviceId && !message.downloadedBy?.some((receipt) => receipt.deviceId === deviceId)) {
+        message.downloadedBy = [...(message.downloadedBy ?? []), { deviceId, name: peers.get(deviceId)?.name ?? "某个设备", at: Date.now() }];
+        await persistChatMessages();
+        emitChatMessage("chat:message:updated", { message: chatView(message) }, message);
+      }
       res.setHeader("Content-Type", file.contentType || "application/octet-stream");
       res.setHeader("Content-Length", String(file.size));
       res.setHeader("Content-Disposition", contentDisposition(file.name));
@@ -719,6 +732,22 @@ export function createLanServer(options: ServerOptions = {}) {
       void persistChatMessages();
       emitChatMessage("chat:message", { message: chatView(message) }, message);
       ack?.({ ok: true, message: chatView(message) });
+    });
+
+    socket.on("chat:read", async (payload: { conversationId?: string; messageIds?: string[] }, ack?: Ack) => {
+      const conversationId = cleanName(payload?.conversationId, "", 180);
+      const ids = new Set(Array.isArray(payload?.messageIds) ? payload.messageIds.slice(0, 1000).map((id) => cleanName(id, "", 80)).filter(Boolean) : []);
+      if (!conversationId || !ids.size) return ack?.({ ok: true, count: 0 });
+      let changed = 0;
+      for (const message of durableChatMessages) {
+        if (!ids.has(message.id) || message.conversationId !== conversationId || message.fromDeviceId === deviceId || !mayAccessMessage(message, deviceId)) continue;
+        if (message.readBy?.some((receipt) => receipt.deviceId === deviceId)) continue;
+        message.readBy = [...(message.readBy ?? []), { deviceId, name: peer.name, at: Date.now() }];
+        changed += 1;
+        emitChatMessage("chat:message:updated", { message: chatView(message) }, message);
+      }
+      if (changed) await persistChatMessages();
+      ack?.({ ok: true, count: changed });
     });
 
     socket.on(

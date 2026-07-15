@@ -180,6 +180,10 @@ test("公共聊天文字和文件会保留并在重启后可继续下载", async
     const text = await emitAck(sender, "chat:message", { public: true, text: "公共聊天会保留 30 天" });
     assert.equal(text.ok, true);
     assert.equal((await textPromise).message.conversationId, "public");
+    const readUpdatePromise = socketEvent(sender, "chat:message:updated");
+    const read = await emitAck(receiver, "chat:read", { conversationId: "public", messageIds: [text.message.id] });
+    assert.equal(read.count, 1);
+    assert.equal((await readUpdatePromise).message.readBy[0].deviceId, "group-receiver");
 
     const filePromise = socketEvent(receiver, "chat:message");
     const prepared = await emitAck(sender, "chat:file:prepare", {
@@ -208,6 +212,8 @@ test("公共聊天文字和文件会保留并在重启后可继续下载", async
     await socketEvent(restored, "connect");
     const history = await historyPromise;
     assert.equal(history.messages.filter((message) => message.conversationId === "public").length, 2);
+    const restoredFile = history.messages.find((message) => message.id === prepared.message.id);
+    assert.equal(restoredFile.downloadedBy[0].deviceId, "group-receiver");
     restored.disconnect();
   } finally {
     sender.disconnect();

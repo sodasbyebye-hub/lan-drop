@@ -35,7 +35,10 @@ type ChatRecord = {
   status: "uploading" | "ready" | "error";
   createdAt: number;
   expiresAt: number;
+  readBy?: ChatReceipt[];
+  downloadedBy?: ChatReceipt[];
 };
+type ChatReceipt = { deviceId: string; name: string; at: number };
 
 const DEVICE_KEY = "lan-drop-device-id";
 const NAME_KEY = "lan-drop-device-name";
@@ -88,6 +91,12 @@ function avatarLetter(name: string) {
 
 function conversationId(fromDeviceId: string, toDeviceId: string) {
   return [fromDeviceId, toDeviceId].sort().join(":");
+}
+
+function receiptNames(receipts: ChatReceipt[] | undefined) {
+  if (!receipts?.length) return "";
+  const names = receipts.slice(0, 3).map((receipt) => receipt.name).join("、");
+  return receipts.length > 3 ? `${names} 等 ${receipts.length} 人` : names;
 }
 
 function uploadRaw(url: string, file: File, headers: Record<string, string>) {
@@ -153,6 +162,12 @@ function App() {
   useEffect(() => {
     activeConversationRef.current = activeConversation;
   }, [activeConversation]);
+
+  useEffect(() => {
+    if (!activeConversation || !socketRef.current) return;
+    const messageIds = visibleMessages.filter((message) => message.fromDeviceId !== identity.deviceId).map((message) => message.id);
+    if (messageIds.length) socketRef.current.emit("chat:read", { conversationId: activeConversation, messageIds });
+  }, [activeConversation, identity.deviceId, visibleMessages]);
 
   useEffect(() => {
     void QRCode.toDataURL(window.location.href, { width: 320, margin: 1, color: { dark: "#153941", light: "#ffffff" } }).then(setQrData);
@@ -330,6 +345,13 @@ function App() {
             {visibleMessages.length ? visibleMessages.map((message) => {
               const mine = message.fromDeviceId === identity.deviceId;
               const progress = message.files?.length ? Math.round(message.files.reduce((sum, file) => sum + file.received, 0) / message.files.reduce((sum, file) => sum + file.size, 0) * 100) : 100;
+              const fileDownloadNames = receiptNames(message.downloadedBy);
+              const readNames = receiptNames(message.readBy);
+              const receipt = mine && message.status === "ready"
+                ? isPublicChat
+                  ? fileDownloadNames ? `已下载：${fileDownloadNames}` : readNames ? `已读：${readNames}` : "未读"
+                  : readNames ? "对方已读" : "已发送"
+                : "";
               return (
                 <article className={`message-row ${mine ? "mine" : "theirs"}`} key={message.id}>
                   {!mine && <span className="message-avatar">{avatarLetter(message.fromName)}</span>}
@@ -345,7 +367,7 @@ function App() {
                         {file.ready ? <a href={`/api/chat-files/${message.id}/${file.id}/download?deviceId=${encodeURIComponent(identity.deviceId)}`} download aria-label={`下载 ${file.name}`}><Download size={18} /></a> : <span className="file-status">{message.status === "error" ? "失败" : `${progress}%`}</span>}
                       </div>
                     ))}
-                    <small className="message-time">{formatTime(message.createdAt)} {mine && message.status === "ready" && <Check size={12} />}</small>
+                    <small className="message-time">{receipt && <span className="message-receipt">{receipt}</span>}{formatTime(message.createdAt)} {mine && message.status === "ready" && <Check size={12} />}</small>
                   </div>
                 </article>
               );
