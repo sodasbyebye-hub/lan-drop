@@ -99,6 +99,30 @@ function receiptNames(receipts: ChatReceipt[] | undefined) {
   return receipts.length > 3 ? `${names} 等 ${receipts.length} 人` : names;
 }
 
+async function writeClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // LAN pages commonly use HTTP, so fall back to selection-based copying.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.inset = "0 auto auto -9999px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, text.length);
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("COPY_FAILED");
+}
+
 function uploadRaw(url: string, file: File, headers: Record<string, string>) {
   return new Promise<void>((resolve, reject) => {
     const request = new XMLHttpRequest();
@@ -153,6 +177,27 @@ function App() {
       next[index] = { ...next[index], ...message };
       return next;
     });
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const viewport = window.visualViewport;
+    const updateViewport = () => {
+      root.style.setProperty("--app-viewport-height", `${viewport?.height ?? window.innerHeight}px`);
+      root.style.setProperty("--app-viewport-top", `${viewport?.offsetTop ?? 0}px`);
+    };
+
+    updateViewport();
+    window.addEventListener("resize", updateViewport);
+    viewport?.addEventListener("resize", updateViewport);
+    viewport?.addEventListener("scroll", updateViewport);
+    return () => {
+      window.removeEventListener("resize", updateViewport);
+      viewport?.removeEventListener("resize", updateViewport);
+      viewport?.removeEventListener("scroll", updateViewport);
+      root.style.removeProperty("--app-viewport-height");
+      root.style.removeProperty("--app-viewport-top");
+    };
   }, []);
 
   useEffect(() => {
@@ -286,9 +331,22 @@ function App() {
     );
   }
 
+  async function copyMessageText(text: string) {
+    try {
+      await writeClipboard(text);
+      showToast("消息已复制");
+    } catch {
+      showToast("复制失败，请长按消息复制");
+    }
+  }
+
   async function copyAddress() {
-    await navigator.clipboard.writeText(window.location.href);
-    showToast("访问地址已复制");
+    try {
+      await writeClipboard(window.location.href);
+      showToast("访问地址已复制");
+    } catch {
+      showToast("复制失败，请长按地址复制");
+    }
   }
 
   return (
@@ -357,7 +415,7 @@ function App() {
                   {!mine && <span className="message-avatar">{avatarLetter(message.fromName)}</span>}
                   <div className={`message-bubble ${message.files?.length ? "has-files" : ""}`}>
                     {isPublicChat && !mine && <strong className="sender-name">{message.fromName}</strong>}
-                    {message.text && <p>{message.text}</p>}
+                    {message.text && <div className="message-text-content"><p>{message.text}</p><button className="copy-message-button" type="button" onClick={() => void copyMessageText(message.text || "")} title="复制消息" aria-label="复制消息"><Copy size={14} /></button></div>}
                     {message.files?.map((file) => (
                       <div className="file-message" key={file.id}>
                         <span><FileIcon size={23} /></span>
