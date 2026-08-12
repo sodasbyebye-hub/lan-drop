@@ -182,6 +182,7 @@ function App() {
   const [qrOpen, setQrOpen] = useState(false);
   const [qrData, setQrData] = useState("");
   const [editingName, setEditingName] = useState(false);
+  const [downloadedFiles, setDownloadedFiles] = useState<Record<string, boolean>>({});
   const socketRef = useRef<Socket | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -456,6 +457,8 @@ function App() {
                     {message.files?.map((file) => {
                       const kind = mediaKind(file.contentType, file.name);
                       const previewUrl = `/api/chat-files/${message.id}/${file.id}/preview?deviceId=${encodeURIComponent(identity.deviceId)}`;
+                      const downloadKey = `${message.id}:${file.id}`;
+                      const downloaded = Boolean(downloadedFiles[downloadKey]);
                       return (
                         <div className="file-attachment" key={file.id}>
                           {file.ready && kind === "image" ? <img className="message-media-preview" src={previewUrl} alt={file.name} loading="lazy" /> : null}
@@ -465,7 +468,7 @@ function App() {
                             <div><strong>{file.name}</strong><small>{formatBytes(file.size)} · {file.contentType.split("/").pop()?.toUpperCase() || "文件"}</small>
                               {message.status === "uploading" && <div className="file-progress"><i style={{ width: `${progress}%` }} /></div>}
                             </div>
-                            {file.ready ? <a href={`/api/chat-files/${message.id}/${file.id}/download?deviceId=${encodeURIComponent(identity.deviceId)}`} download aria-label={`下载 ${file.name}`}><Download size={18} /></a> : <span className="file-status">{message.status === "error" ? "失败" : `${progress}%`}</span>}
+                            {file.ready ? <a className={`file-download-button ${downloaded ? "downloaded" : ""}`} href={`/api/chat-files/${message.id}/${file.id}/download?deviceId=${encodeURIComponent(identity.deviceId)}`} download onClick={() => setDownloadedFiles((current) => ({ ...current, [downloadKey]: true }))} aria-label={downloaded ? `${file.name} 已下载，可再次下载` : `下载 ${file.name}`}>{downloaded ? <><Check size={15} /><span>已下载</span></> : <Download size={18} />}</a> : <span className="file-status">{message.status === "error" ? "失败" : `${progress}%`}</span>}
                           </div>
                         </div>
                       );
