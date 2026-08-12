@@ -202,6 +202,27 @@ test("公共聊天文字和文件会保留并在重启后可继续下载", async
     assert.equal(upload.status, 201);
     const download = await fetch(`${running.baseUrl}/api/chat-files/${prepared.message.id}/${file.id}/download?deviceId=group-receiver`);
     assert.equal(await download.text(), "hello");
+    const nonMediaPreview = await fetch(`${running.baseUrl}/api/chat-files/${prepared.message.id}/${file.id}/preview?deviceId=group-receiver`);
+    assert.equal(nonMediaPreview.status, 404);
+
+    const imagePrepared = await emitAck(sender, "chat:file:prepare", {
+      public: true,
+      files: [{ name: "preview.png", size: 8, contentType: "image/png" }],
+    });
+    assert.equal(imagePrepared.ok, true);
+    const imageFile = imagePrepared.message.files[0];
+    const imageBody = Buffer.from("png-data");
+    const imageUpload = await fetch(`${running.baseUrl}/api/chat-files/${imagePrepared.message.id}/${imageFile.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "image/png", "X-Device-Id": "group-sender", "X-Upload-Token": imagePrepared.uploadToken, "X-File-Size": String(imageBody.length) },
+      body: imageBody,
+    });
+    assert.equal(imageUpload.status, 201);
+    const imagePreview = await fetch(`${running.baseUrl}/api/chat-files/${imagePrepared.message.id}/${imageFile.id}/preview?deviceId=group-receiver`);
+    assert.equal(imagePreview.status, 200);
+    assert.equal(imagePreview.headers.get("content-type"), "image/png");
+    assert.match(imagePreview.headers.get("content-disposition") || "", /^inline;/);
+    assert.deepEqual(Buffer.from(await imagePreview.arrayBuffer()), imageBody);
 
     sender.disconnect();
     receiver.disconnect();
@@ -211,7 +232,7 @@ test("公共聊天文字和文件会保留并在重启后可继续下载", async
     const historyPromise = socketEvent(restored, "chat:history");
     await socketEvent(restored, "connect");
     const history = await historyPromise;
-    assert.equal(history.messages.filter((message) => message.conversationId === "public").length, 2);
+    assert.equal(history.messages.filter((message) => message.conversationId === "public").length, 3);
     const restoredFile = history.messages.find((message) => message.id === prepared.message.id);
     assert.equal(restoredFile.downloadedBy[0].deviceId, "group-receiver");
     restored.disconnect();

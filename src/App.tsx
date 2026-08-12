@@ -39,6 +39,7 @@ type ChatRecord = {
   downloadedBy?: ChatReceipt[];
 };
 type ChatReceipt = { deviceId: string; name: string; at: number };
+type MediaKind = "image" | "video";
 
 const DEVICE_KEY = "lan-drop-device-id";
 const NAME_KEY = "lan-drop-device-name";
@@ -97,6 +98,37 @@ function receiptNames(receipts: ChatReceipt[] | undefined) {
   if (!receipts?.length) return "";
   const names = receipts.slice(0, 3).map((receipt) => receipt.name).join("、");
   return receipts.length > 3 ? `${names} 等 ${receipts.length} 人` : names;
+}
+
+function mediaKind(contentType: string, name: string): MediaKind | null {
+  if (contentType.startsWith("image/")) return "image";
+  if (contentType.startsWith("video/")) return "video";
+  const extension = name.split(".").pop()?.toLowerCase();
+  if (["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "heic", "heif"].includes(extension || "")) return "image";
+  if (["mp4", "webm", "mov", "m4v", "ogv", "ogg"].includes(extension || "")) return "video";
+  return null;
+}
+
+function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const kind = mediaKind(file.type, file.name);
+  const previewUrl = useMemo(() => kind ? URL.createObjectURL(file) : "", [file, kind]);
+
+  useEffect(() => {
+    if (!previewUrl) return;
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [previewUrl]);
+
+  return (
+    <div className="pending-file">
+      <div className="pending-file-preview">
+        {kind === "image" && previewUrl ? <img src={previewUrl} alt={`预览 ${file.name}`} /> : null}
+        {kind === "video" && previewUrl ? <video src={previewUrl} controls playsInline preload="metadata" aria-label={`预览 ${file.name}`} /> : null}
+        {!kind ? <FileIcon size={26} /> : null}
+      </div>
+      <div className="pending-file-info"><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></div>
+      <button type="button" onClick={onRemove} aria-label={`移除 ${file.name}`}><X size={16} /></button>
+    </div>
+  );
 }
 
 async function writeClipboard(text: string) {
@@ -278,6 +310,11 @@ function App() {
   function addFiles(input: FileList | File[]) {
     const selected = Array.from(input);
     setFiles((current) => [...current, ...selected].slice(0, 20));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function removePendingFile(index: number) {
+    setFiles((current) => current.filter((_, fileIndex) => fileIndex !== index));
   }
 
   function sendText() {
@@ -416,15 +453,23 @@ function App() {
                   <div className={`message-bubble ${message.files?.length ? "has-files" : ""}`}>
                     {isPublicChat && !mine && <strong className="sender-name">{message.fromName}</strong>}
                     {message.text && <div className="message-text-content"><p>{message.text}</p><button className="copy-message-button" type="button" onClick={() => void copyMessageText(message.text || "")} title="复制消息" aria-label="复制消息"><Copy size={14} /></button></div>}
-                    {message.files?.map((file) => (
-                      <div className="file-message" key={file.id}>
-                        <span><FileIcon size={23} /></span>
-                        <div><strong>{file.name}</strong><small>{formatBytes(file.size)} · {file.contentType.split("/").pop()?.toUpperCase() || "文件"}</small>
-                          {message.status === "uploading" && <div className="file-progress"><i style={{ width: `${progress}%` }} /></div>}
+                    {message.files?.map((file) => {
+                      const kind = mediaKind(file.contentType, file.name);
+                      const previewUrl = `/api/chat-files/${message.id}/${file.id}/preview?deviceId=${encodeURIComponent(identity.deviceId)}`;
+                      return (
+                        <div className="file-attachment" key={file.id}>
+                          {file.ready && kind === "image" ? <img className="message-media-preview" src={previewUrl} alt={file.name} loading="lazy" /> : null}
+                          {file.ready && kind === "video" ? <video className="message-media-preview" src={previewUrl} controls playsInline preload="metadata" aria-label={file.name} /> : null}
+                          <div className="file-message">
+                            <span><FileIcon size={23} /></span>
+                            <div><strong>{file.name}</strong><small>{formatBytes(file.size)} · {file.contentType.split("/").pop()?.toUpperCase() || "文件"}</small>
+                              {message.status === "uploading" && <div className="file-progress"><i style={{ width: `${progress}%` }} /></div>}
+                            </div>
+                            {file.ready ? <a href={`/api/chat-files/${message.id}/${file.id}/download?deviceId=${encodeURIComponent(identity.deviceId)}`} download aria-label={`下载 ${file.name}`}><Download size={18} /></a> : <span className="file-status">{message.status === "error" ? "失败" : `${progress}%`}</span>}
+                          </div>
                         </div>
-                        {file.ready ? <a href={`/api/chat-files/${message.id}/${file.id}/download?deviceId=${encodeURIComponent(identity.deviceId)}`} download aria-label={`下载 ${file.name}`}><Download size={18} /></a> : <span className="file-status">{message.status === "error" ? "失败" : `${progress}%`}</span>}
-                      </div>
-                    ))}
+                      );
+                    })}
                     <small className="message-time">{receipt && <span className="message-receipt">{receipt}</span>}{formatTime(message.createdAt)} {mine && message.status === "ready" && <Check size={12} />}</small>
                   </div>
                 </article>
@@ -432,7 +477,7 @@ function App() {
             }) : <div className="empty-conversation"><span>{isPublicChat ? <Users size={26} /> : <Send size={26} />}</span><strong>{isPublicChat ? "开始公共聊天" : "开始设备聊天"}</strong><p>发送消息或文件，它们会保存 30 天。</p></div>}
           </div>
 
-          {files.length > 0 && <div className="attachment-tray"><div><strong>准备发送 {files.length} 个文件</strong><small>{formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</small></div><button type="button" onClick={() => setFiles([])} aria-label="移除待发送文件"><X size={17} /></button><button className="send-file-button" type="button" onClick={sendFiles} disabled={busy}>{busy ? "发送中…" : "发送文件"}</button></div>}
+          {files.length > 0 && <div className="attachment-tray"><div className="pending-file-list">{files.map((file, index) => <PendingFilePreview file={file} onRemove={() => removePendingFile(index)} key={`${file.name}-${file.size}-${file.lastModified}-${index}`} />)}</div><div className="attachment-actions"><div><strong>准备发送 {files.length} 个文件</strong><small>{formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</small></div><button type="button" onClick={() => setFiles([])} aria-label="移除全部待发送文件"><X size={17} /></button><button className="send-file-button" type="button" onClick={sendFiles} disabled={busy}>{busy ? "发送中…" : "发送文件"}</button></div></div>}
           <div className="composer" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
             <label title="添加文件" aria-label="添加文件"><input ref={fileInputRef} type="file" multiple onChange={(event) => event.target.files && addFiles(event.target.files)} /><Paperclip size={22} /></label>
             <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); sendText(); } }} maxLength={1000} placeholder={isPublicChat ? "发送一条公共消息…" : activePeer ? `发消息给 ${activePeer.name}…` : "先在左侧选择设备"} disabled={!isPublicChat && !activePeer} aria-label="聊天消息" />

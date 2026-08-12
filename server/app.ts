@@ -182,6 +182,19 @@ function contentDisposition(filename: string) {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
+function inlineContentDisposition(filename: string) {
+  const fallback = filename.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_") || "preview";
+  return `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+function isPreviewableMedia(contentType: string) {
+  const normalized = contentType.toLowerCase().split(";")[0].trim();
+  return new Set([
+    "image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/bmp", "image/heic", "image/heif",
+    "video/mp4", "video/webm", "video/quicktime", "video/ogg", "video/x-m4v",
+  ]).has(normalized);
+}
+
 function getLanAddresses(port: number) {
   const addresses: string[] = [];
   for (const interfaces of Object.values(os.networkInterfaces())) {
@@ -602,6 +615,29 @@ export function createLanServer(options: ServerOptions = {}) {
       createReadStream(filePath).on("error", () => res.destroy()).pipe(res);
     } catch {
       apiError(res, 404, "FILE_NOT_FOUND", "文件不存在或已过期");
+    }
+  });
+
+  app.get("/api/chat-files/:messageId/:fileId/preview", async (req, res) => {
+    const message = durableChatMessages.find((item) => item.id === req.params.messageId);
+    const file = message?.files?.find((item) => item.id === req.params.fileId);
+    const deviceId = cleanName(req.query.deviceId, "", 80);
+    if (!message || !file || !file.ready || message.expiresAt <= Date.now() || !mayAccessMessage(message, deviceId) || !isPreviewableMedia(file.contentType))
+      return apiError(res, 404, "PREVIEW_NOT_FOUND", "媒体预览不存在或已过期");
+    const filePath = path.join(chatDir, file.storedName);
+    try {
+      await access(filePath);
+      res.setHeader("Content-Type", file.contentType);
+      res.setHeader("Content-Disposition", inlineContentDisposition(file.name));
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      res.sendFile(filePath, (error) => {
+        if (!error) return;
+        if (!res.headersSent) apiError(res, 404, "PREVIEW_NOT_FOUND", "媒体预览不存在或已过期");
+        else res.end();
+      });
+    } catch {
+      apiError(res, 404, "PREVIEW_NOT_FOUND", "媒体预览不存在或已过期");
     }
   });
 
