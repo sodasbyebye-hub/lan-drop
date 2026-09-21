@@ -14,6 +14,8 @@ import {
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
+import { readIdentity, saveDeviceName } from "./device-identity";
+import { useChatScroll } from "./use-chat-scroll";
 
 type Peer = { deviceId: string; name: string; connectedAt: number };
 type ChatFile = {
@@ -41,37 +43,13 @@ type ChatRecord = {
 type ChatReceipt = { deviceId: string; name: string; at: number };
 type MediaKind = "image" | "video";
 
-const DEVICE_KEY = "lan-drop-device-id";
-const NAME_KEY = "lan-drop-device-name";
-const NAME_VERSION_KEY = "lan-drop-device-name-version";
-const NAME_VERSION = "whimsical-zh-v1";
-
-const QUIRKY_PREFIXES = ["会飞的", "倒立的", "发光的", "迷路的", "会唱歌的", "隐形的", "熬夜的", "跳舞的", "生气的", "爱摸鱼的", "打嗝的", "戴墨镜的"];
-const QUIRKY_NOUNS = ["西瓜", "章鱼", "土豆", "拖鞋", "企鹅", "海豹", "蘑菇", "鲨鱼", "月亮", "煎饼", "胡萝卜", "小笼包", "仙人掌", "河马", "云朵"];
-
 function makeId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function makeIdentity() {
-  let deviceId = localStorage.getItem(DEVICE_KEY);
-  if (!deviceId) {
-    deviceId = makeId();
-    localStorage.setItem(DEVICE_KEY, deviceId);
-  }
-  const savedName = localStorage.getItem(NAME_KEY);
-  const version = localStorage.getItem(NAME_VERSION_KEY);
-  const name = savedName && version === NAME_VERSION ? savedName : makeQuirkyName();
-  localStorage.setItem(NAME_KEY, name);
-  localStorage.setItem(NAME_VERSION_KEY, NAME_VERSION);
-  return { deviceId, name };
-}
-
-function makeQuirkyName() {
-  const prefix = QUIRKY_PREFIXES[Math.floor(Math.random() * QUIRKY_PREFIXES.length)];
-  const noun = QUIRKY_NOUNS[Math.floor(Math.random() * QUIRKY_NOUNS.length)];
-  return `${prefix}${noun}`;
+  return readIdentity(localStorage, navigator, makeId);
 }
 
 function formatBytes(bytes: number) {
@@ -174,6 +152,7 @@ function App() {
   const [selectedPeer, setSelectedPeer] = useState("");
   const [isPublicChat, setIsPublicChat] = useState(true);
   const [messages, setMessages] = useState<ChatRecord[]>([]);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -185,7 +164,6 @@ function App() {
   const [downloadedFiles, setDownloadedFiles] = useState<Record<string, boolean>>({});
   const socketRef = useRef<Socket | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const messagesRef = useRef<HTMLDivElement>(null);
   const activeConversationRef = useRef("");
 
   const otherPeers = useMemo(() => peers.filter((peer) => peer.deviceId !== identity.deviceId), [peers, identity.deviceId]);
@@ -196,6 +174,7 @@ function App() {
     [activeConversation, messages],
   );
   const activeTitle = isPublicChat ? "公共聊天" : activePeer?.name || "选择一个设备";
+  const { messagesRef, contentRef } = useChatScroll(activeConversation, visibleMessages.length, historyRevision);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -234,10 +213,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "smooth" });
-  }, [activeConversation, visibleMessages.length]);
-
-  useEffect(() => {
     activeConversationRef.current = activeConversation;
   }, [activeConversation]);
 
@@ -261,7 +236,10 @@ function App() {
       const available = list.filter((peer) => peer.deviceId !== identity.deviceId);
       setSelectedPeer((current) => available.some((peer) => peer.deviceId === current) ? current : available[0]?.deviceId || "");
     });
-    socket.on("chat:history", ({ messages: history }: { messages: ChatRecord[] }) => setMessages(history));
+    socket.on("chat:history", ({ messages: history }: { messages: ChatRecord[] }) => {
+      setMessages(history);
+      setHistoryRevision((revision) => revision + 1);
+    });
     socket.on("chat:message", ({ message }: { message: ChatRecord }) => {
       upsertMessage(message);
       if (message.fromDeviceId !== identity.deviceId && message.conversationId !== activeConversationRef.current) {
@@ -301,8 +279,7 @@ function App() {
   }
 
   function saveName() {
-    const name = identity.name.trim().slice(0, 32) || "匿名设备";
-    localStorage.setItem(NAME_KEY, name);
+    const name = saveDeviceName(localStorage, identity.name, navigator);
     setIdentity((current) => ({ ...current, name }));
     socketRef.current?.emit("peer:update", { name });
     setEditingName(false);
@@ -437,6 +414,7 @@ function App() {
           </div>
 
           <div className="message-area" ref={messagesRef} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
+            <div className="message-content" ref={contentRef}>
             <span className="day-divider">聊天记录保留 30 天</span>
             {visibleMessages.length ? visibleMessages.map((message) => {
               const mine = message.fromDeviceId === identity.deviceId;
@@ -478,6 +456,7 @@ function App() {
                 </article>
               );
             }) : <div className="empty-conversation"><span>{isPublicChat ? <Users size={26} /> : <Send size={26} />}</span><strong>{isPublicChat ? "开始公共聊天" : "开始设备聊天"}</strong><p>发送消息或文件，它们会保存 30 天。</p></div>}
+            </div>
           </div>
 
           {files.length > 0 && <div className="attachment-tray"><div className="pending-file-list">{files.map((file, index) => <PendingFilePreview file={file} onRemove={() => removePendingFile(index)} key={`${file.name}-${file.size}-${file.lastModified}-${index}`} />)}</div><div className="attachment-actions"><div><strong>准备发送 {files.length} 个文件</strong><small>{formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</small></div><button type="button" onClick={() => setFiles([])} aria-label="移除全部待发送文件"><X size={17} /></button><button className="send-file-button" type="button" onClick={sendFiles} disabled={busy}>{busy ? "发送中…" : "发送文件"}</button></div></div>}

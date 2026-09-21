@@ -11,7 +11,7 @@
     "dev": "cross-env NODE_ENV=development tsx watch server/index.ts",
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "cross-env NODE_ENV=production node dist-server/server/index.js",
-    "test": "npm run build && cross-env NODE_ENV=test node --test tests/*.test.mjs",
+    "test": "npm run build && cross-env NODE_ENV=test node --import tsx --test tests/*.test.mjs",
     "lint": "eslint src server --max-warnings=0"
   },
   "dependencies": {
