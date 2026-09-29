@@ -33,3 +33,36 @@ button { cursor: pointer; }
 @media (max-width: 480px) { .chat-brand strong { font-size: 15px; }.chat-brand > span { width: 34px; height: 34px; }.profile-button { width: 34px; height: 34px; }.file-message { min-width: 0; }.message-bubble.has-files { min-width: 0; width: 100%; }.composer { padding: 10px max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }.composer button { width: 42px; padding: 0; justify-content: center; font-size: 0; }.composer button svg { width: 19px; height: 19px; }.attachment-tray { margin-left: 10px; margin-right: 10px; } }
 
 .message-content { flex: 0 0 auto; min-height: 100%; display: flex; flex-direction: column; gap: 10px; }
+
+.image-stack { width: min(360px, 100%); max-width: 100%; }
+.image-stack [hidden] { display: none !important; }
+.image-stack-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 2px 10px; }
+.image-stack-toolbar button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 36px; padding: 6px 8px; border: 0; border-radius: 9px; font-size: 12px; }
+.image-stack-toggle { color: #385e51; background: transparent; }
+.image-stack-toggle > svg:last-child { transition: transform .2s; }
+.image-stack.is-expanded .image-stack-toggle > svg:last-child { transform: rotate(180deg); }
+.image-stack-download-all { color: #fff; background: #21845e; white-space: nowrap; }
+.image-stack-download-all:disabled { color: #748b80; background: #e0eae4; cursor: default; }
+.image-stack-stage { position: relative; height: 300px; width: 100%; }
+.image-stack-cover { position: relative; width: 100%; height: 100%; display: block; padding: 0; border: 0; border-radius: 12px; background: transparent; cursor: pointer; }
+.image-stack-card { position: absolute; top: 18px; left: 9%; width: 82%; height: 242px; padding: 5px; overflow: hidden; border: 1px solid #dce8df; border-radius: 13px; background: #fff; box-shadow: 0 5px 14px #163c3020; }
+.image-stack-card.layer-0 { z-index: 3; transform: rotate(-4deg); }
+.image-stack-card.layer-1 { z-index: 2; transform: translate(7px, 7px) rotate(3deg); }
+.image-stack-card.layer-2 { z-index: 1; transform: translate(12px, 12px) rotate(8deg); }
+.image-stack-card img { width: 100%; height: 100%; display: block; object-fit: cover; border-radius: 8px; }
+.image-stack-hint { position: absolute; bottom: 2px; left: 0; right: 0; color: #748b80; font-size: 11px; }
+.image-stack-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 8px; height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 3px; border-radius: 10px; animation: image-stack-open .18s ease-out; }
+.image-stack-item { min-width: 0; overflow: hidden; border: 1px solid #dce8df; border-radius: 10px; background: #fff; }
+.image-stack-thumb { height: 96px; background: #eef3ef; }
+.image-stack-thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.image-stack-caption { display: flex; align-items: center; gap: 4px; padding: 3px 5px 3px 8px; }
+.image-stack-caption > span:first-child { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: #466457; }
+.image-stack-caption a { display: grid; place-items: center; flex: 0 0 34px; height: 34px; border-radius: 8px; color: #207c53; background: #e8f6ed; }
+.image-stack-caption a:hover { background: #cfeeda; }
+.image-stack-placeholder { display: flex; width: 100%; height: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 8px; padding: 8px; color: #748b80; background: #eef3ef; font-size: 11px; text-align: center; }
+.image-stack-wait { font-size: 10px; color: #748b80; }
+.image-stack-notice { margin: 8px 4px 2px; color: #718579; font-size: 11px; line-height: 1.5; }
+.image-stack :is(button, a):focus-visible { outline: 2px solid #239567; outline-offset: 2px; }
+.image-stack + .file-attachment { margin-top: 10px; }
+@keyframes image-stack-open { from { opacity: .4; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .image-stack-grid { animation: none; } .image-stack-toggle > svg:last-child { transition: none; } }

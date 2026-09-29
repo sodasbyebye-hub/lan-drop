@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import { readIdentity, saveDeviceName } from "./device-identity";
 import { useChatScroll } from "./use-chat-scroll";
+import { ImageStack } from "./ImageStack";
 
 type Peer = { deviceId: string; name: string; connectedAt: number };
 type ChatFile = {
@@ -418,6 +419,8 @@ function App() {
             <span className="day-divider">聊天记录保留 30 天</span>
             {visibleMessages.length ? visibleMessages.map((message) => {
               const mine = message.fromDeviceId === identity.deviceId;
+              const imageFiles = message.files?.filter((file) => mediaKind(file.contentType, file.name) === "image") ?? [];
+              const stackedImages = imageFiles.length > 1;
               const progress = message.files?.length ? Math.round(message.files.reduce((sum, file) => sum + file.received, 0) / message.files.reduce((sum, file) => sum + file.size, 0) * 100) : 100;
               const fileDownloadNames = receiptNames(message.downloadedBy);
               const readNames = receiptNames(message.readBy);
@@ -432,7 +435,8 @@ function App() {
                   <div className={`message-bubble ${message.files?.length ? "has-files" : ""}`}>
                     {isPublicChat && !mine && <strong className="sender-name">{message.fromName}</strong>}
                     {message.text && <div className="message-text-content"><p>{message.text}</p><button className="copy-message-button" type="button" onClick={() => void copyMessageText(message.text || "")} title="复制消息" aria-label="复制消息"><Copy size={14} /></button></div>}
-                    {message.files?.map((file) => {
+                    {stackedImages && <ImageStack messageId={message.id} deviceId={identity.deviceId} files={imageFiles} failed={message.status === "error"} downloadedFiles={downloadedFiles} onDownload={(fileId) => setDownloadedFiles((current) => ({ ...current, [`${message.id}:${fileId}`]: true }))} />}
+                    {message.files?.filter((file) => !stackedImages || mediaKind(file.contentType, file.name) !== "image").map((file) => {
                       const kind = mediaKind(file.contentType, file.name);
                       const previewUrl = `/api/chat-files/${message.id}/${file.id}/preview?deviceId=${encodeURIComponent(identity.deviceId)}`;
                       const downloadKey = `${message.id}:${file.id}`;
