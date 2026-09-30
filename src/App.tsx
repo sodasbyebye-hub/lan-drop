@@ -17,6 +17,7 @@ import { io, type Socket } from "socket.io-client";
 import { readIdentity, saveDeviceName } from "./device-identity";
 import { useChatScroll } from "./use-chat-scroll";
 import { ImageStack } from "./ImageStack";
+import { MediaLibrary } from "./MediaLibrary";
 
 type Peer = { deviceId: string; name: string; connectedAt: number };
 type ChatFile = {
@@ -149,6 +150,8 @@ function uploadRaw(url: string, file: File, headers: Record<string, string>) {
 function App() {
   const [identity, setIdentity] = useState(makeIdentity);
   const [connected, setConnected] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [mediaRevision, setMediaRevision] = useState(0);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [selectedPeer, setSelectedPeer] = useState("");
   const [isPublicChat, setIsPublicChat] = useState(true);
@@ -214,14 +217,14 @@ function App() {
   }, []);
 
   useEffect(() => {
-    activeConversationRef.current = activeConversation;
-  }, [activeConversation]);
+    activeConversationRef.current = libraryOpen ? "" : activeConversation;
+  }, [activeConversation, libraryOpen]);
 
   useEffect(() => {
-    if (!activeConversation || !socketRef.current) return;
+    if (libraryOpen || !activeConversation || !socketRef.current) return;
     const messageIds = visibleMessages.filter((message) => message.fromDeviceId !== identity.deviceId).map((message) => message.id);
     if (messageIds.length) socketRef.current.emit("chat:read", { conversationId: activeConversation, messageIds });
-  }, [activeConversation, identity.deviceId, visibleMessages]);
+  }, [activeConversation, identity.deviceId, visibleMessages, libraryOpen]);
 
   useEffect(() => {
     void QRCode.toDataURL(window.location.href, { width: 320, margin: 1, color: { dark: "#153941", light: "#ffffff" } }).then(setQrData);
@@ -230,7 +233,8 @@ function App() {
   useEffect(() => {
     const socket = io({ auth: { deviceId: identity.deviceId, name: identity.name } });
     socketRef.current = socket;
-    socket.on("connect", () => setConnected(true));
+    socket.on("connect", () => { setConnected(true); setMediaRevision((revision) => revision + 1); });
+    socket.on("media:changed", () => setMediaRevision((revision) => revision + 1));
     socket.on("disconnect", () => setConnected(false));
     socket.on("peers:update", (list: Peer[]) => {
       setPeers(list);
@@ -256,6 +260,7 @@ function App() {
   }, [identity.deviceId, identity.name, upsertMessage]);
 
   function choosePublicChat() {
+    setLibraryOpen(false);
     setIsPublicChat(true);
     setFiles([]);
     setUnreadCounts((current) => {
@@ -267,6 +272,7 @@ function App() {
   }
 
   function choosePeer(peer: Peer) {
+    setLibraryOpen(false);
     setSelectedPeer(peer.deviceId);
     setIsPublicChat(false);
     setFiles([]);
@@ -369,6 +375,7 @@ function App() {
     <div className="chat-app">
       <header className="chat-topbar">
         <div className="chat-brand"><span><Zap size={20} /></span><div><strong>局域网聊天</strong><small>同一网络，消息与文件即时送达</small></div></div>
+        <nav className="app-view-switch" aria-label="功能切换"><button type="button" aria-pressed={!libraryOpen} onClick={() => setLibraryOpen(false)}>聊天</button><button type="button" aria-pressed={libraryOpen} onClick={() => setLibraryOpen(true)}>媒体库</button></nav>
         <div className="network-state"><span className={connected ? "online" : ""} /><Wifi size={15} /> {connected ? "局域网已连接" : "正在连接"}</div>
         <div className="online-count"><Users size={17} /> {otherPeers.length + 1} 台设备在线</div>
         <button className="profile-button" type="button" onClick={() => setEditingName(true)} aria-label="编辑我的设备名称">{avatarLetter(identity.name)}</button>
@@ -392,7 +399,8 @@ function App() {
           <div className="network-note"><Wifi size={23} /><strong>所有设备都在同一网络</strong><small>消息和文件不会离开局域网</small><button type="button" onClick={() => setQrOpen(true)}>显示加入二维码</button></div>
         </aside>
 
-        <section className="conversation-panel">
+        <MediaLibrary identity={identity} revision={mediaRevision} active={libraryOpen} />
+        <section className="conversation-panel" hidden={libraryOpen}>
           <div className="conversation-top">
             <button className="back-button" type="button" aria-label="返回设备列表"><ChevronLeft size={21} /></button>
             <span className={isPublicChat ? "conversation-avatar group" : "conversation-avatar"}>{isPublicChat ? <Users size={23} /> : avatarLetter(activePeer?.name || "?")}</span>

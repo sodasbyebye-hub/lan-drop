@@ -18,6 +18,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import express, { type Request, type Response } from "express";
 import { Server as SocketServer, type Socket } from "socket.io";
+import { createMediaLibrary } from "./media-library.js";
 
 // File sizes remain JavaScript-safe integers; there is no product-level size cap.
 export const MAX_FILE_SIZE = Number.MAX_SAFE_INTEGER;
@@ -463,6 +464,13 @@ export function createLanServer(options: ServerOptions = {}) {
   }
 
   app.disable("x-powered-by");
+  const mediaLibrary = createMediaLibrary({ dataDir, chatDir, beginUpload, endUpload, hasSpace, receiveStream,
+    changed: (item) => {
+      if (item.toDeviceId) io.to(`device:${item.uploaderDeviceId}`).to(`device:${item.toDeviceId}`).emit("media:changed");
+      else io.emit("media:changed");
+    },
+  });
+  app.use("/api/media", mediaLibrary.router);
 
   app.get("/api/health", (_req, res) => {
     res.json({
@@ -584,6 +592,7 @@ export function createLanServer(options: ServerOptions = {}) {
       }
       await persistChatMessages();
       emitChatMessage("chat:message:updated", { message: chatView(message) }, message);
+      await mediaLibrary.importChat(message).catch((error) => console.error("Media library import failed:", error));
       res.status(201).json({ ok: true });
     } catch {
       message.status = "error";
@@ -988,6 +997,10 @@ export function createLanServer(options: ServerOptions = {}) {
 
   async function start() {
     await initializeStorage();
+    await mediaLibrary.initialize();
+    for (const message of durableChatMessages) {
+      await mediaLibrary.importChat(message).catch((error) => console.error("Media library import failed:", error));
+    }
     await configureFrontend();
     cleanupInterval = setInterval(() => void cleanupExpired(), 60_000);
     cleanupInterval.unref();
@@ -1004,6 +1017,7 @@ export function createLanServer(options: ServerOptions = {}) {
   }
 
   async function stop() {
+    await mediaLibrary.flush();
     if (cleanupInterval) clearInterval(cleanupInterval);
     for (const transfer of [...transfers.values()]) await cleanupTransfer(transfer.id);
     await vite?.close();
