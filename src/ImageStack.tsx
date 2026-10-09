@@ -27,7 +27,7 @@ export function ImageStack({ messageId, deviceId, files, failed, downloadedFiles
   const [pinned, setPinned] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [notice, setNotice] = useState("");
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const request = useRef<AbortController | undefined>(undefined);
   const busy = useRef(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const gridId = useId();
@@ -35,35 +35,36 @@ export function ImageStack({ messageId, deviceId, files, failed, downloadedFiles
   const allReady = files.every((file) => file.ready);
   const fileUrl = (file: ImageFile, action: string) => `/api/chat-files/${messageId}/${file.id}/${action}?deviceId=${encodeURIComponent(deviceId)}`;
 
-  useEffect(() => () => { clearTimeout(timer.current); busy.current = false; }, []);
+  useEffect(() => () => { request.current?.abort(); busy.current = false; }, []);
 
-  function downloadAll() {
+  async function downloadAll() {
     if (busy.current || !allReady) return;
     busy.current = true;
     setDownloading(true);
-    let index = 0;
-    const next = () => {
-      const file = files[index];
-      // Let the browser stream each original file to disk, without buffering
-      // the entire album in memory or recompressing the images.
+    setNotice("");
+    const controller = new AbortController();
+    request.current = controller;
+    const url = `/api/chat-files/${messageId}/images.zip?deviceId=${encodeURIComponent(deviceId)}`;
+    try {
+      const response = await fetch(url, { method: "HEAD", signal: controller.signal });
+      if (!response.ok) throw new Error(response.status === 409 ? "请等待全部图片上传完成后重试。" : "图片已过期或暂时无法下载，请刷新后重试。");
+      // Let the browser stream the ZIP to disk without holding the album in memory.
       const link = document.createElement("a");
-      link.href = fileUrl(file, "download");
-      link.download = file.name;
+      link.href = url;
+      link.download = `图片-${messageId.slice(0, 8)}.zip`;
       document.body.append(link);
       link.click();
       link.remove();
-      onDownload(file.id);
-      index += 1;
-      if (index < files.length) {
-        setNotice(`正在发起下载 ${index}/${files.length}…`);
-        timer.current = setTimeout(next, 400);
-      } else {
-        busy.current = false;
-        setDownloading(false);
-        setNotice(`已发起 ${files.length} 张原图下载。若未全部保存，请允许浏览器下载多个文件后重试。`);
+      files.forEach((file) => onDownload(file.id));
+      setNotice(`已发起 ZIP 下载，包含 ${files.length} 张原图，请在浏览器下载列表查看进度。`);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setNotice(error instanceof Error && error.name !== "TypeError" ? error.message : "下载失败，请检查网络后重试。");
       }
-    };
-    next();
+    } finally {
+      busy.current = false;
+      if (!controller.signal.aborted) setDownloading(false);
+    }
   }
 
   return (
@@ -77,7 +78,7 @@ export function ImageStack({ messageId, deviceId, files, failed, downloadedFiles
           <Images size={16} /><strong>{files.length} 张图片</strong><ChevronDown size={15} />
         </button>
         <button className="image-stack-download-all" type="button" disabled={!allReady || downloading} onClick={downloadAll}>
-          <Download size={15} />{downloading ? "发起下载中…" : "下载全部"}
+          <Download size={15} />{downloading ? "准备下载中…" : "下载全部（ZIP）"}
         </button>
       </div>
       <div className="image-stack-stage">

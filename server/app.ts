@@ -19,6 +19,8 @@ import { pipeline } from "node:stream/promises";
 import express, { type Request, type Response } from "express";
 import { Server as SocketServer, type Socket } from "socket.io";
 import { createMediaLibrary } from "./media-library.js";
+import { chatMediaKind } from "../shared/media.js";
+import { streamImageZip } from "./image-zip.js";
 
 // File sizes remain JavaScript-safe integers; there is no product-level size cap.
 export const MAX_FILE_SIZE = Number.MAX_SAFE_INTEGER;
@@ -601,6 +603,42 @@ export function createLanServer(options: ServerOptions = {}) {
       apiError(res, 400, "UPLOAD_FAILED", "文件上传中断，请重试");
     } finally {
       endUpload(deviceId);
+    }
+  });
+
+  app.get("/api/chat-files/:messageId/images.zip", async (req, res) => {
+    const message = durableChatMessages.find((item) => item.id === req.params.messageId);
+    const deviceId = cleanName(req.query.deviceId, "", 80);
+    if (!message || message.expiresAt <= Date.now() || !mayAccessMessage(message, deviceId))
+      return apiError(res, 404, "MESSAGE_NOT_FOUND", "聊天图片不存在或已过期");
+    const images = message.files?.filter((file) => chatMediaKind(file.contentType, file.name) === "image") ?? [];
+    if (!images.length) return apiError(res, 404, "NO_IMAGES", "此消息没有图片");
+    if (images.some((file) => !file.ready)) return apiError(res, 409, "IMAGES_NOT_READY", "请等待全部图片上传完成");
+    const entries = images.map((file) => ({ name: file.name, size: file.size, path: path.join(chatDir, file.storedName) }));
+    try {
+      for (const entry of entries) {
+        const info = await stat(entry.path);
+        if (!info.isFile() || info.size !== entry.size) throw new Error("Missing image");
+      }
+    } catch {
+      return apiError(res, 404, "FILE_NOT_FOUND", "部分图片不存在或已过期");
+    }
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", contentDisposition(`图片-${message.id.slice(0, 8)}.zip`));
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    // The client can check availability without starting archive generation.
+    if (req.method === "HEAD") return res.end();
+    try {
+      await streamImageZip(entries, res);
+      if (deviceId && deviceId !== message.fromDeviceId && !message.downloadedBy?.some((receipt) => receipt.deviceId === deviceId)) {
+        message.downloadedBy = [...(message.downloadedBy ?? []), { deviceId, name: peers.get(deviceId)?.name ?? "某个设备", at: Date.now() }];
+        await persistChatMessages();
+        emitChatMessage("chat:message:updated", { message: chatView(message) }, message);
+      }
+    } catch {
+      // A missing source or cancelled download must not leave a partial ZIP open.
+      res.destroy();
     }
   });
 

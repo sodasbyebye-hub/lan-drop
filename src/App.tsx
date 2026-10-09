@@ -18,6 +18,7 @@ import { readIdentity, saveDeviceName } from "./device-identity";
 import { useChatScroll } from "./use-chat-scroll";
 import { ImageStack } from "./ImageStack";
 import { MediaLibrary } from "./MediaLibrary";
+import { chatMediaKind as mediaKind } from "../shared/media";
 
 type Peer = { deviceId: string; name: string; connectedAt: number };
 type ChatFile = {
@@ -43,7 +44,6 @@ type ChatRecord = {
   downloadedBy?: ChatReceipt[];
 };
 type ChatReceipt = { deviceId: string; name: string; at: number };
-type MediaKind = "image" | "video";
 
 function makeId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -78,15 +78,6 @@ function receiptNames(receipts: ChatReceipt[] | undefined) {
   if (!receipts?.length) return "";
   const names = receipts.slice(0, 3).map((receipt) => receipt.name).join("、");
   return receipts.length > 3 ? `${names} 等 ${receipts.length} 人` : names;
-}
-
-function mediaKind(contentType: string, name: string): MediaKind | null {
-  if (contentType.startsWith("image/")) return "image";
-  if (contentType.startsWith("video/")) return "video";
-  const extension = name.split(".").pop()?.toLowerCase();
-  if (["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "heic", "heif"].includes(extension || "")) return "image";
-  if (["mp4", "webm", "mov", "m4v", "ogv", "ogg"].includes(extension || "")) return "video";
-  return null;
 }
 
 function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => void }) {
