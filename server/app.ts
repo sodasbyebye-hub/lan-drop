@@ -21,6 +21,7 @@ import { Server as SocketServer, type Socket } from "socket.io";
 import { createMediaLibrary } from "./media-library.js";
 import { chatMediaKind } from "../shared/media.js";
 import { streamImageZip } from "./image-zip.js";
+import { isHostRequest, mayManage } from "./host-access.js";
 
 // File sizes remain JavaScript-safe integers; there is no product-level size cap.
 export const MAX_FILE_SIZE = Number.MAX_SAFE_INTEGER;
@@ -239,6 +240,7 @@ export function createLanServer(options: ServerOptions = {}) {
   let durableChatMessages: DurableChatRecord[] = [];
   const activeByDevice = new Map<string, number>();
   let activeUploads = 0;
+  let managing = false;
   let persistChain = Promise.resolve();
   let cleanupInterval: NodeJS.Timeout | undefined;
   let vite: { middlewares: express.RequestHandler; close: () => Promise<void> } | undefined;
@@ -346,6 +348,7 @@ export function createLanServer(options: ServerOptions = {}) {
   }
 
   function beginUpload(deviceId: string) {
+    if (managing) return false;
     const deviceCount = activeByDevice.get(deviceId) ?? 0;
     if (activeUploads >= MAX_ACTIVE_UPLOADS || deviceCount >= MAX_DEVICE_UPLOADS) return false;
     activeUploads += 1;
@@ -405,6 +408,7 @@ export function createLanServer(options: ServerOptions = {}) {
   }
 
   async function cleanupExpired() {
+    if (managing) return;
     const now = Date.now();
     const expiredPublic = publicFiles.filter((file) => file.expiresAt <= now);
     if (expiredPublic.length) {
@@ -466,13 +470,65 @@ export function createLanServer(options: ServerOptions = {}) {
   }
 
   app.disable("x-powered-by");
+  async function manage(req: Request, res: Response, action: () => Promise<void>) {
+    if (!mayManage(req)) { apiError(res, 403, "HOST_ONLY", "仅主机可以删除，请在运行服务的电脑上打开网页"); return; }
+    if (managing || activeUploads) { apiError(res, 409, "BUSY", "正在上传或处理文件，请稍后重试"); return; }
+    managing = true;
+    try { await action(); }
+    catch (error) { console.error("Host deletion failed:", error); if (!res.headersSent) apiError(res, 500, "DELETE_FAILED", "删除未完成，请刷新后重试"); }
+    finally { managing = false; }
+  }
+
+  async function removeChatSource(sourceKey: string) {
+    const [messageId, fileId] = sourceKey.split(":");
+    const message = durableChatMessages.find((item) => item.id === messageId);
+    const file = message?.files?.find((item) => item.id === fileId);
+    if (!message || !file) return;
+    message.files = message.files?.filter((item) => item.id !== fileId);
+    if (!message.files?.length && !message.text) durableChatMessages = durableChatMessages.filter((item) => item.id !== message.id);
+    else message.status = message.files?.every((item) => item.ready) ? "ready" : message.status;
+    await persistChatMessages();
+    await rm(path.join(chatDir, path.basename(file.storedName)), { force: true });
+    if (durableChatMessages.includes(message)) emitChatMessage("chat:message:updated", { message: chatView(message) }, message);
+    else emitChatMessage("chat:message:deleted", { id: message.id, conversationId: message.conversationId }, message);
+  }
+
   const mediaLibrary = createMediaLibrary({ dataDir, chatDir, beginUpload, endUpload, hasSpace, receiveStream,
+    manage, removeChatSource,
     changed: (item) => {
       if (item.toDeviceId) io.to(`device:${item.uploaderDeviceId}`).to(`device:${item.toDeviceId}`).emit("media:changed");
       else io.emit("media:changed");
     },
   });
   app.use("/api/media", mediaLibrary.router);
+
+  app.get("/api/host", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ canManage: isHostRequest(req) });
+  });
+
+  async function deleteMessages(messages: DurableChatRecord[]) {
+    const ids = new Set(messages.map((item) => item.id));
+    durableChatMessages = durableChatMessages.filter((item) => !ids.has(item.id));
+    await persistChatMessages();
+    await mediaLibrary.removeSources(new Set(messages.flatMap((message) => (message.files ?? []).map((file) => `${message.id}:${file.id}`))));
+    for (const message of messages) {
+      for (const file of message.files ?? []) await rm(path.join(chatDir, path.basename(file.storedName)), { force: true });
+      emitChatMessage("chat:message:deleted", { id: message.id, conversationId: message.conversationId }, message);
+    }
+  }
+
+  app.delete("/api/chat/messages/:id", (req, res) => manage(req, res, async () => {
+    const message = durableChatMessages.find((item) => item.id === req.params.id);
+    if (!message) { apiError(res, 404, "MESSAGE_NOT_FOUND", "消息不存在或已删除"); return; }
+    await deleteMessages([message]);
+    res.status(204).end();
+  }));
+  app.delete("/api/chat/conversations/:id", (req, res) => manage(req, res, async () => {
+    const messages = durableChatMessages.filter((item) => item.conversationId === req.params.id);
+    await deleteMessages(messages);
+    res.status(204).end();
+  }));
 
   app.get("/api/health", (_req, res) => {
     res.json({

@@ -10,6 +10,7 @@ import {
   Wifi,
   X,
   Zap,
+  Trash2,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,6 +20,7 @@ import { useChatScroll } from "./use-chat-scroll";
 import { ImageStack } from "./ImageStack";
 import { MediaLibrary } from "./MediaLibrary";
 import { chatMediaKind as mediaKind } from "../shared/media";
+import { deleteAsHost } from "./host-actions";
 
 type Peer = { deviceId: string; name: string; connectedAt: number };
 type ChatFile = {
@@ -141,6 +143,8 @@ function uploadRaw(url: string, file: File, headers: Record<string, string>) {
 function App() {
   const [identity, setIdentity] = useState(makeIdentity);
   const [connected, setConnected] = useState(false);
+  const [canManage, setCanManage] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [mediaRevision, setMediaRevision] = useState(0);
   const [peers, setPeers] = useState<Peer[]>([]);
@@ -224,7 +228,10 @@ function App() {
   useEffect(() => {
     const socket = io({ auth: { deviceId: identity.deviceId, name: identity.name } });
     socketRef.current = socket;
-    socket.on("connect", () => { setConnected(true); setMediaRevision((revision) => revision + 1); });
+    socket.on("connect", () => {
+      setConnected(true); setMediaRevision((revision) => revision + 1);
+      void fetch("/api/host", { cache: "no-store" }).then((response) => response.json()).then((body) => setCanManage(body.canManage === true)).catch(() => setCanManage(false));
+    });
     socket.on("media:changed", () => setMediaRevision((revision) => revision + 1));
     socket.on("disconnect", () => setConnected(false));
     socket.on("peers:update", (list: Peer[]) => {
@@ -353,6 +360,20 @@ function App() {
     }
   }
 
+  async function deleteChat(message?: ChatRecord) {
+    if (deleting || !activeConversation) return;
+    const prompt = message ? "永久删除这条消息及其附件？对应的媒体库图片、视频也会删除，所有设备同步生效，无法恢复。" : "永久清空当前聊天的全部记录及附件？对应的媒体库图片、视频也会删除，所有设备同步生效，无法恢复。";
+    if (!window.confirm(prompt)) return;
+    setDeleting(true);
+    try {
+      await deleteAsHost(message ? `/api/chat/messages/${message.id}` : `/api/chat/conversations/${encodeURIComponent(activeConversation)}`);
+      setMessages((current) => current.filter((item) => message ? item.id !== message.id : item.conversationId !== activeConversation));
+      setMediaRevision((revision) => revision + 1);
+      showToast(message ? "消息及对应附件已删除" : "当前聊天已清空");
+    } catch (error) { showToast(error instanceof Error ? error.message : "删除失败，请重试"); }
+    finally { setDeleting(false); }
+  }
+
   async function copyAddress() {
     try {
       await writeClipboard(window.location.href);
@@ -390,7 +411,7 @@ function App() {
           <div className="network-note"><Wifi size={23} /><strong>所有设备都在同一网络</strong><small>消息和文件不会离开局域网</small><button type="button" onClick={() => setQrOpen(true)}>显示加入二维码</button></div>
         </aside>
 
-        <MediaLibrary identity={identity} revision={mediaRevision} active={libraryOpen} />
+        <MediaLibrary identity={identity} revision={mediaRevision} active={libraryOpen} canManage={canManage} />
         <section className="conversation-panel" hidden={libraryOpen}>
           <div className="conversation-top">
             <button className="back-button" type="button" aria-label="返回设备列表"><ChevronLeft size={21} /></button>
@@ -411,6 +432,7 @@ function App() {
               <option value="public">公共聊天</option>
               {otherPeers.map((peer) => <option key={peer.deviceId} value={peer.deviceId}>{peer.name}</option>)}
             </select>
+            {canManage && <button className="host-clear-button" type="button" aria-label="清空当前聊天" disabled={deleting || !visibleMessages.length} onClick={() => void deleteChat()} title="主机管理：清空当前聊天"><Trash2 size={15} /><span>清空当前聊天</span></button>}
           </div>
 
           <div className="message-area" ref={messagesRef} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
@@ -454,7 +476,7 @@ function App() {
                         </div>
                       );
                     })}
-                    <small className="message-time">{receipt && <span className="message-receipt">{receipt}</span>}{formatTime(message.createdAt)} {mine && message.status === "ready" && <Check size={12} />}</small>
+                    <small className="message-time">{canManage && <button className="host-delete-button" type="button" aria-label="删除消息" title="主机管理：删除消息及对应附件" disabled={deleting} onClick={() => void deleteChat(message)}><Trash2 size={14} /></button>}{receipt && <span className="message-receipt">{receipt}</span>}{formatTime(message.createdAt)} {mine && message.status === "ready" && <Check size={12} />}</small>
                   </div>
                 </article>
               );

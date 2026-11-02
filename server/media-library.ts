@@ -20,6 +20,8 @@ type Options = {
   hasSpace: (size: number) => Promise<boolean>;
   receiveStream: (req: Request, destination: string, size: number) => Promise<number>;
   changed: (record: MediaRecord) => void;
+  manage: (req: Request, res: Response, action: () => Promise<void>) => Promise<void>;
+  removeChatSource: (sourceKey: string) => Promise<void>;
 };
 
 function safeText(input: unknown, max: number) {
@@ -148,6 +150,24 @@ export function createMediaLibrary(options: Options) {
     } catch { fail(res, 500, "配文保存失败，请重试"); }
   });
 
+  async function removeWhere(predicate: (item: MediaRecord) => boolean) {
+    const removed = records.filter(predicate);
+    for (const item of removed) {
+      await rm(filePath(item), { force: true });
+      await transaction((current) => current.filter((record) => record.id !== item.id));
+      options.changed(item);
+    }
+  }
+
+  router.delete("/:id", (req, res) => options.manage(req, res, async () => {
+    const item = records.find((record) => record.id === req.params.id);
+    if (!item) { fail(res, 404, "素材不存在或已删除"); return; }
+    // Persist removal from chat first, so startup import cannot recreate it.
+    if (item.sourceKey) await options.removeChatSource(item.sourceKey);
+    await removeWhere((record) => record.id === item.id);
+    res.status(204).end();
+  }));
+
   for (const action of ["preview", "download"]) {
     router.get(`/:id/${action}`, (req, res) => {
       const item = records.find((record) => record.id === req.params.id);
@@ -161,5 +181,5 @@ export function createMediaLibrary(options: Options) {
       else res.sendFile(filePath(item), done);
     });
   }
-  return { router, initialize, importChat, flush: () => queue };
+  return { router, initialize, importChat, removeSources: (keys: Set<string>) => removeWhere((item) => Boolean(item.sourceKey && keys.has(item.sourceKey))), flush: () => queue };
 }

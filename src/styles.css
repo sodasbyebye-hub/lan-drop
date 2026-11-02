@@ -142,3 +142,9 @@ button { cursor: pointer; }
   .library-caption-overlay { padding: 9px; }.library-caption-overlay > span { -webkit-line-clamp: 2; }.library-dialog { padding: 15px; }.library-draft textarea { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { .library-card-preview > img, .library-caption-overlay { transition: none; } }
+.host-delete-button, .host-clear-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 6px; padding: 6px; color: #ad4d43; background: transparent; cursor: pointer; }
+.host-delete-button:hover, .host-clear-button:hover { background: #fbece9; }
+.host-clear-button { margin-left: auto; font-size: 12px; flex-shrink: 0; }
+.host-delete-button:disabled, .host-clear-button:disabled { opacity: .45; cursor: default; }
+.library-card-info .host-delete-button { color: #ad4d43; }
+@media (max-width: 600px) { .host-clear-button span { display: none; } .host-clear-button { margin-left: 0; } }

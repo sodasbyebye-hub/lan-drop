@@ -1,13 +1,14 @@
-import { Download, ImageOff, Images, Pencil, Play, Upload, Video, X } from "lucide-react";
+import { Download, ImageOff, Images, Pencil, Play, Upload, Video, X, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { mediaTypeOf } from "../shared/media";
+import { deleteAsHost } from "./host-actions";
 
 type MediaItem = {
   id: string; kind: "image" | "video"; name: string; caption: string; size: number;
   contentType: string; uploadedAt: number; uploadedBy: string; source: "chat" | "upload"; private: boolean;
 };
 type Draft = { id: string; file: File; caption: string; error?: string };
-type Props = { identity: { deviceId: string; name: string }; revision: number; active: boolean };
+type Props = { identity: { deviceId: string; name: string }; revision: number; active: boolean; canManage: boolean };
 
 function MediaPreview({ item, url }: { item: MediaItem; url: string }) {
   const [error, setError] = useState(false);
@@ -17,7 +18,7 @@ function MediaPreview({ item, url }: { item: MediaItem; url: string }) {
     : <><video src={`${url}#t=0.1`} muted playsInline preload="metadata" onError={() => setError(true)} /><span className="library-play"><Play size={24} fill="currentColor" /></span></>;
 }
 
-export function MediaLibrary({ identity, revision, active }: Props) {
+export function MediaLibrary({ identity, revision, active, canManage }: Props) {
   const [items, setItems] = useState<MediaItem[]>([]);
   const [kind, setKind] = useState<"image" | "video">("image");
   const [loading, setLoading] = useState(true);
@@ -30,6 +31,7 @@ export function MediaLibrary({ identity, revision, active }: Props) {
   const [caption, setCaption] = useState("");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [deleting, setDeleting] = useState(false);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const mounted = useRef(true);
   const requestId = useRef(0);
@@ -124,6 +126,19 @@ export function MediaLibrary({ identity, revision, active }: Props) {
   }
 
   const visible = items.filter((item) => item.kind === kind);
+  async function deleteItem(item: MediaItem) {
+    if (deleting || !window.confirm(`永久删除“${item.name}”及其配文？聊天中的对应附件也会删除，所有设备同步生效，无法恢复。`)) return;
+    setDeleting(true);
+    try {
+      await deleteAsHost(`/api/media/${item.id}`);
+      if (selected?.id === item.id) setSelected(null);
+      if (editing?.id === item.id) setEditing(null);
+      setItems((current) => current.filter((record) => record.id !== item.id));
+      setNotice("素材及聊天中的对应附件已删除");
+      await refresh();
+    } catch (failure) { setNotice(failure instanceof Error ? failure.message : "删除失败，请重试"); }
+    finally { setDeleting(false); }
+  }
   return (
     <section className="media-library" hidden={!active} aria-label="媒体库" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(Array.from(event.dataTransfer.files)); }}>
       <header className="library-header"><div><h1>媒体库</h1><p>上传收藏，或从聊天自动收录 · 原文件长期保留</p></div>
@@ -154,6 +169,7 @@ export function MediaLibrary({ identity, revision, active }: Props) {
             <div className="library-card-info"><div><strong title={item.name}>{item.name}</strong><small>{item.private ? "私聊 · 仅双方可见" : item.source === "chat" ? "公共聊天收录" : "独立上传"} · {item.uploadedBy}</small></div>
               <button type="button" title="编辑配文" aria-label={`编辑配文 ${item.name}`} onClick={() => { setEditing(item); setCaption(item.caption); }}><Pencil size={15} /></button>
               <a href={url(item, "download")} download aria-label={`下载 ${item.name}`} title="下载原文件"><Download size={16} /></a>
+              {canManage && <button className="host-delete-button" type="button" disabled={deleting} aria-label={`删除素材 ${item.name}`} title="主机管理：永久删除素材" onClick={() => void deleteItem(item)}><Trash2 size={16} /></button>}
             </div>
           </article>)}</div>}
       </div>
