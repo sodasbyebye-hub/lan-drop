@@ -37,6 +37,7 @@ type ChatRecord = {
   fromDeviceId: string;
   fromName: string;
   toDeviceId?: string;
+  toName?: string;
   text?: string;
   files?: ChatFile[];
   status: "uploading" | "ready" | "error";
@@ -148,7 +149,7 @@ function App() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [mediaRevision, setMediaRevision] = useState(0);
   const [peers, setPeers] = useState<Peer[]>([]);
-  const [selectedPeer, setSelectedPeer] = useState("");
+  const [preferredPeer, setSelectedPeer] = useState("");
   const [isPublicChat, setIsPublicChat] = useState(true);
   const [messages, setMessages] = useState<ChatRecord[]>([]);
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -166,7 +167,29 @@ function App() {
   const activeConversationRef = useRef("");
 
   const otherPeers = useMemo(() => peers.filter((peer) => peer.deviceId !== identity.deviceId), [peers, identity.deviceId]);
-  const activePeer = otherPeers.find((peer) => peer.deviceId === selectedPeer);
+  const chatPeers = useMemo(() => {
+    const history = new Map<string, { deviceId: string; name: string; lastAt: number }>();
+    for (const message of messages) {
+      if (!message.toDeviceId) continue;
+      const outgoing = message.fromDeviceId === identity.deviceId;
+      if (!outgoing && message.toDeviceId !== identity.deviceId) continue;
+      const deviceId = outgoing ? message.toDeviceId : message.fromDeviceId;
+      const name = outgoing ? message.toName : message.fromName;
+      const existing = history.get(deviceId);
+      if (!existing || (name && message.createdAt >= existing.lastAt)) {
+        history.set(deviceId, { deviceId, name: name || "离线设备 · " + deviceId.slice(-6), lastAt: name ? message.createdAt : 0 });
+      }
+    }
+    const online = new Set(otherPeers.map((peer) => peer.deviceId));
+    return [
+      ...otherPeers.map((peer) => ({ ...peer, online: true })),
+      ...[...history.values()].filter((peer) => !online.has(peer.deviceId))
+        .sort((a, b) => b.lastAt - a.lastAt).map((peer) => ({ ...peer, online: false })),
+    ];
+  }, [messages, identity.deviceId, otherPeers]);
+  const activePeer = chatPeers.find((peer) => peer.deviceId === preferredPeer) ?? chatPeers[0];
+  const selectedPeer = activePeer?.deviceId ?? "";
+  const canSend = isPublicChat || activePeer?.online === true;
   const activeConversation = isPublicChat ? "public" : selectedPeer ? conversationId(identity.deviceId, selectedPeer) : "";
   const visibleMessages = useMemo(
     () => messages.filter((message) => message.conversationId === activeConversation).sort((left, right) => left.createdAt - right.createdAt),
@@ -183,7 +206,7 @@ function App() {
   const upsertMessage = useCallback((message: ChatRecord) => {
     setMessages((current) => {
       const index = current.findIndex((item) => item.id === message.id);
-      if (index < 0) return [...current, message].slice(-1000);
+      if (index < 0) return [...current, message];
       const next = [...current];
       next[index] = { ...next[index], ...message };
       return next;
@@ -236,8 +259,6 @@ function App() {
     socket.on("disconnect", () => setConnected(false));
     socket.on("peers:update", (list: Peer[]) => {
       setPeers(list);
-      const available = list.filter((peer) => peer.deviceId !== identity.deviceId);
-      setSelectedPeer((current) => available.some((peer) => peer.deviceId === current) ? current : available[0]?.deviceId || "");
     });
     socket.on("chat:history", ({ messages: history }: { messages: ChatRecord[] }) => {
       setMessages(history);
@@ -269,7 +290,7 @@ function App() {
     });
   }
 
-  function choosePeer(peer: Peer) {
+  function choosePeer(peer: { deviceId: string }) {
     setLibraryOpen(false);
     setSelectedPeer(peer.deviceId);
     setIsPublicChat(false);
@@ -291,6 +312,7 @@ function App() {
   }
 
   function addFiles(input: FileList | File[]) {
+    if (!canSend) return showToast("设备已离线，重新上线后可发送");
     const selected = Array.from(input);
     setFiles((current) => [...current, ...selected].slice(0, 20));
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -303,7 +325,7 @@ function App() {
   function sendText() {
     const text = draft.trim();
     if (!text) return;
-    if (!isPublicChat && !selectedPeer) return showToast("请选择接收设备");
+    if (!canSend) return showToast(activePeer ? "设备已离线，重新上线后可发送" : "请选择接收设备");
     socketRef.current?.emit(
       "chat:message",
       isPublicChat ? { public: true, text } : { toDeviceId: selectedPeer, text },
@@ -316,7 +338,7 @@ function App() {
 
   function sendFiles() {
     if (!files.length) return;
-    if (!isPublicChat && !selectedPeer) return showToast("请选择接收设备");
+    if (!canSend) return showToast(activePeer ? "设备已离线，重新上线后可发送" : "请选择接收设备");
     setBusy(true);
     const localFiles = [...files];
     socketRef.current?.emit(
@@ -401,10 +423,10 @@ function App() {
           </button>
           <div className="device-items">
             <div className="device-label">设备聊天</div>
-            {otherPeers.length ? otherPeers.map((peer) => (
+            {chatPeers.length ? chatPeers.map((peer) => (
               <button className={`device-item ${!isPublicChat && selectedPeer === peer.deviceId ? "active" : ""}`} type="button" key={peer.deviceId} onClick={() => choosePeer(peer)}>
                 <span className="letter-avatar">{avatarLetter(peer.name)}</span>
-                <span><strong>{peer.name}</strong><small><i /> 在线</small></span>{unreadCounts[conversationId(identity.deviceId, peer.deviceId)] ? <span className="unread-badge">{unreadCounts[conversationId(identity.deviceId, peer.deviceId)] > 99 ? "99+" : unreadCounts[conversationId(identity.deviceId, peer.deviceId)]}</span> : null}
+                <span><strong>{peer.name}</strong><small>{peer.online ? <><i /> 在线</> : "已离线 · 可查看记录"}</small></span>{unreadCounts[conversationId(identity.deviceId, peer.deviceId)] ? <span className="unread-badge">{unreadCounts[conversationId(identity.deviceId, peer.deviceId)] > 99 ? "99+" : unreadCounts[conversationId(identity.deviceId, peer.deviceId)]}</span> : null}
               </button>
             )) : <p className="no-devices">等待其他设备加入同一局域网</p>}
           </div>
@@ -416,21 +438,21 @@ function App() {
           <div className="conversation-top">
             <button className="back-button" type="button" aria-label="返回设备列表"><ChevronLeft size={21} /></button>
             <span className={isPublicChat ? "conversation-avatar group" : "conversation-avatar"}>{isPublicChat ? <Users size={23} /> : avatarLetter(activePeer?.name || "?")}</span>
-            <div><strong>{activeTitle}</strong><small>{isPublicChat ? `${otherPeers.length + 1} 台设备可参与 · 保存 30 天` : activePeer ? <><i /> 在线</> : "从左侧选择设备"}</small></div>
+            <div><strong>{activeTitle}</strong><small>{isPublicChat ? `${otherPeers.length + 1} 台设备可参与 · 保存 30 天` : activePeer ? activePeer.online ? <><i /> 在线</> : "已离线 · 可查看记录和下载文件" : "从左侧选择设备"}</small></div>
             <select
               className="mobile-chat-picker"
               value={isPublicChat ? "public" : selectedPeer}
               onChange={(event) => {
                 if (event.target.value === "public") choosePublicChat();
                 else {
-                  const peer = otherPeers.find((item) => item.deviceId === event.target.value);
+                  const peer = chatPeers.find((item) => item.deviceId === event.target.value);
                   if (peer) choosePeer(peer);
                 }
               }}
               aria-label="选择聊天对象"
             >
               <option value="public">公共聊天</option>
-              {otherPeers.map((peer) => <option key={peer.deviceId} value={peer.deviceId}>{peer.name}</option>)}
+              {chatPeers.map((peer) => <option key={peer.deviceId} value={peer.deviceId}>{peer.name}{peer.online ? "" : "（离线）"}</option>)}
             </select>
             {canManage && <button className="host-clear-button" type="button" aria-label="清空当前聊天" disabled={deleting || !visibleMessages.length} onClick={() => void deleteChat()} title="主机管理：清空当前聊天"><Trash2 size={15} /><span>清空当前聊天</span></button>}
           </div>
@@ -484,11 +506,11 @@ function App() {
             </div>
           </div>
 
-          {files.length > 0 && <div className="attachment-tray"><div className="pending-file-list">{files.map((file, index) => <PendingFilePreview file={file} onRemove={() => removePendingFile(index)} key={`${file.name}-${file.size}-${file.lastModified}-${index}`} />)}</div><div className="attachment-actions"><div><strong>准备发送 {files.length} 个文件</strong><small>{formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</small></div><button type="button" onClick={() => setFiles([])} aria-label="移除全部待发送文件"><X size={17} /></button><button className="send-file-button" type="button" onClick={sendFiles} disabled={busy}>{busy ? "发送中…" : "发送文件"}</button></div></div>}
+          {files.length > 0 && <div className="attachment-tray"><div className="pending-file-list">{files.map((file, index) => <PendingFilePreview file={file} onRemove={() => removePendingFile(index)} key={`${file.name}-${file.size}-${file.lastModified}-${index}`} />)}</div><div className="attachment-actions"><div><strong>准备发送 {files.length} 个文件</strong><small>{formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</small></div><button type="button" onClick={() => setFiles([])} aria-label="移除全部待发送文件"><X size={17} /></button><button className="send-file-button" type="button" onClick={sendFiles} disabled={busy || !canSend}>{busy ? "发送中…" : "发送文件"}</button></div></div>}
           <div className="composer" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
-            <label title="添加文件" aria-label="添加文件"><input ref={fileInputRef} type="file" multiple onChange={(event) => event.target.files && addFiles(event.target.files)} /><Paperclip size={22} /></label>
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); sendText(); } }} maxLength={1000} placeholder={isPublicChat ? "发送一条公共消息…" : activePeer ? `发消息给 ${activePeer.name}…` : "先在左侧选择设备"} disabled={!isPublicChat && !activePeer} aria-label="聊天消息" />
-            <button type="button" onClick={sendText} disabled={!draft.trim() || (!isPublicChat && !activePeer)}><Send size={18} /> 发送</button>
+            <label title="添加文件" aria-label="添加文件"><input ref={fileInputRef} type="file" multiple disabled={!canSend} onChange={(event) => event.target.files && addFiles(event.target.files)} /><Paperclip size={22} /></label>
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); sendText(); } }} maxLength={1000} placeholder={isPublicChat ? "发送一条公共消息…" : activePeer ? activePeer.online ? `发消息给 ${activePeer.name}…` : "设备已离线，可查看历史记录" : "先在左侧选择设备"} disabled={!canSend} aria-label="聊天消息" />
+            <button type="button" onClick={sendText} disabled={!draft.trim() || !canSend}><Send size={18} /> 发送</button>
           </div>
         </section>
       </main>

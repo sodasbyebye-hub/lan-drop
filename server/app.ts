@@ -101,6 +101,7 @@ type DurableChatRecord = {
   fromDeviceId: string;
   fromName: string;
   toDeviceId?: string;
+  toName?: string;
   text?: string;
   files?: ChatFileRecord[];
   status: "uploading" | "ready" | "error";
@@ -861,7 +862,7 @@ export function createLanServer(options: ServerOptions = {}) {
         conversationId: conversationIdFor(deviceId, isPublic ? undefined : toDeviceId),
         fromDeviceId: deviceId,
         fromName: peer.name,
-        ...(isPublic ? {} : { toDeviceId }),
+        ...(target ? { toDeviceId, toName: target.name } : {}),
         text,
         status: "ready",
         createdAt: now,
@@ -924,7 +925,7 @@ export function createLanServer(options: ServerOptions = {}) {
           conversationId: conversationIdFor(deviceId, isPublic ? undefined : toDeviceId),
           fromDeviceId: deviceId,
           fromName: peer.name,
-          ...(isPublic ? {} : { toDeviceId }),
+          ...(target ? { toDeviceId, toName: target.name } : {}),
           files,
           status: "uploading",
           createdAt: now,
