@@ -85,7 +85,10 @@ function receiptNames(receipts: ChatReceipt[] | undefined) {
 
 function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => void }) {
   const kind = mediaKind(file.type, file.name);
-  const previewUrl = useMemo(() => kind ? URL.createObjectURL(file) : "", [file, kind]);
+  const previewUrl = useMemo(() => {
+    try { return kind ? URL.createObjectURL(file) : ""; }
+    catch { return ""; }
+  }, [file, kind]);
 
   useEffect(() => {
     if (!previewUrl) return;
@@ -97,7 +100,7 @@ function PendingFilePreview({ file, onRemove }: { file: File; onRemove: () => vo
       <div className="pending-file-preview">
         {kind === "image" && previewUrl ? <img src={previewUrl} alt={`预览 ${file.name}`} /> : null}
         {kind === "video" && previewUrl ? <video src={previewUrl} controls playsInline preload="metadata" aria-label={`预览 ${file.name}`} /> : null}
-        {!kind ? <FileIcon size={26} /> : null}
+        {!previewUrl ? <FileIcon size={26} /> : null}
       </div>
       <div className="pending-file-info"><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></div>
       <button type="button" onClick={onRemove} aria-label={`移除 ${file.name}`}><X size={16} /></button>
@@ -164,7 +167,8 @@ function App() {
   const [editingName, setEditingName] = useState(false);
   const [downloadedFiles, setDownloadedFiles] = useState<Record<string, boolean>>({});
   const socketRef = useRef<Socket | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pickerVersion, setPickerVersion] = useState(0);
+  const handledPicker = useRef<HTMLInputElement | null>(null);
   const activeConversationRef = useRef("");
 
   const otherPeers = useMemo(() => peers.filter((peer) => peer.deviceId !== identity.deviceId), [peers, identity.deviceId]);
@@ -313,9 +317,17 @@ function App() {
   }
 
   function addFiles(input: FileList | File[]) {
-    if (!canSend) return showToast("设备已离线，重新上线后可发送");
     const selected = Array.from(input);
     setFiles((current) => [...current, ...selected].slice(0, 20));
+  }
+
+  function acceptPickedFiles(input: HTMLInputElement) {
+    if (handledPicker.current === input || !input.files?.length) return;
+    handledPicker.current = input;
+    addFiles(input.files);
+    // Replace the picker only after copying the selection. This also allows
+    // picking the same photo again without clearing the live native input.
+    setPickerVersion((version) => version + 1);
   }
 
   function removePendingFile(index: number) {
@@ -510,7 +522,7 @@ function App() {
 
           {files.length > 0 && <div className="attachment-tray"><div className="pending-file-list">{files.map((file, index) => <PendingFilePreview file={file} onRemove={() => removePendingFile(index)} key={`${file.name}-${file.size}-${file.lastModified}-${index}`} />)}</div><div className="attachment-actions"><div><strong>准备发送 {files.length} 个文件</strong><small>{formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</small></div><button type="button" onClick={() => setFiles([])} aria-label="移除全部待发送文件"><X size={17} /></button><button className="send-file-button" type="button" onClick={sendFiles} disabled={busy || !canSend}>{busy ? "发送中…" : "发送文件"}</button></div></div>}
           <div className="composer" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
-            <label title="添加文件"><input ref={fileInputRef} aria-label="添加文件" type="file" multiple disabled={!canSend || busy} onClick={(event) => { event.currentTarget.value = ""; }} onChange={(event) => event.target.files && addFiles(event.target.files)} /><Paperclip size={22} aria-hidden="true" /></label>
+            <label title="添加文件"><input key={pickerVersion} aria-label="添加文件" type="file" multiple disabled={busy} onInput={(event) => acceptPickedFiles(event.currentTarget)} onChange={(event) => acceptPickedFiles(event.currentTarget)} /><Paperclip size={22} aria-hidden="true" /></label>
             <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); sendText(); } }} maxLength={1000} placeholder={isPublicChat ? "发送一条公共消息…" : activePeer ? activePeer.online ? `发消息给 ${activePeer.name}…` : "设备已离线，可查看历史记录" : "先在左侧选择设备"} disabled={!canSend} aria-label="聊天消息" />
             <button type="button" onClick={sendText} disabled={!draft.trim() || !canSend}><Send size={18} /> 发送</button>
           </div>
