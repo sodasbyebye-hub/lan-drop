@@ -134,7 +134,8 @@ function uploadRaw(url: string, file: File, headers: Record<string, string>) {
     const request = new XMLHttpRequest();
     request.open("POST", url);
     Object.entries(headers).forEach(([key, value]) => request.setRequestHeader(key, value));
-    request.onload = () => request.status >= 200 && request.status < 300 ? resolve() : reject(new Error("文件上传失败，请重试"));
+    request.responseType = "json";
+    request.onload = () => request.status >= 200 && request.status < 300 ? resolve() : reject(new Error(request.response?.message || "文件上传失败，请重试"));
     request.onerror = () => reject(new Error("网络连接中断，请重试"));
     request.onabort = () => reject(new Error("上传已取消"));
     request.send(file);
@@ -315,7 +316,6 @@ function App() {
     if (!canSend) return showToast("设备已离线，重新上线后可发送");
     const selected = Array.from(input);
     setFiles((current) => [...current, ...selected].slice(0, 20));
-    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function removePendingFile(index: number) {
@@ -339,17 +339,19 @@ function App() {
   function sendFiles() {
     if (!files.length) return;
     if (!canSend) return showToast(activePeer ? "设备已离线，重新上线后可发送" : "请选择接收设备");
+    const socket = socketRef.current;
+    if (!socket?.connected) return showToast("尚未连接主机，请刷新页面后重试");
     setBusy(true);
     const localFiles = [...files];
-    socketRef.current?.emit(
+    socket.timeout(10000).emit(
       "chat:file:prepare",
       isPublicChat
         ? { public: true, files: localFiles.map((file) => ({ name: file.name, size: file.size, contentType: file.type || "application/octet-stream" })) }
         : { toDeviceId: selectedPeer, files: localFiles.map((file) => ({ name: file.name, size: file.size, contentType: file.type || "application/octet-stream" })) },
-      async (result: { ok: boolean; message?: ChatRecord; uploadToken?: string; messageText?: string }) => {
-        if (!result.ok || !result.message || !result.uploadToken) {
+      async (failure: Error | null, result?: { ok: boolean; message?: ChatRecord | string; uploadToken?: string }) => {
+        if (failure || !result?.ok || !result.message || typeof result.message === "string" || !result.uploadToken) {
           setBusy(false);
-          return showToast(result.messageText || "文件消息发送失败");
+          return showToast(failure ? "主机未响应，请检查连接后重试" : typeof result?.message === "string" ? result.message : "文件消息发送失败");
         }
         upsertMessage(result.message);
         try {
@@ -508,7 +510,7 @@ function App() {
 
           {files.length > 0 && <div className="attachment-tray"><div className="pending-file-list">{files.map((file, index) => <PendingFilePreview file={file} onRemove={() => removePendingFile(index)} key={`${file.name}-${file.size}-${file.lastModified}-${index}`} />)}</div><div className="attachment-actions"><div><strong>准备发送 {files.length} 个文件</strong><small>{formatBytes(files.reduce((sum, file) => sum + file.size, 0))}</small></div><button type="button" onClick={() => setFiles([])} aria-label="移除全部待发送文件"><X size={17} /></button><button className="send-file-button" type="button" onClick={sendFiles} disabled={busy || !canSend}>{busy ? "发送中…" : "发送文件"}</button></div></div>}
           <div className="composer" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); addFiles(event.dataTransfer.files); }}>
-            <label title="添加文件" aria-label="添加文件"><input ref={fileInputRef} type="file" multiple disabled={!canSend} onChange={(event) => event.target.files && addFiles(event.target.files)} /><Paperclip size={22} /></label>
+            <label title="添加文件"><input ref={fileInputRef} aria-label="添加文件" type="file" multiple disabled={!canSend || busy} onClick={(event) => { event.currentTarget.value = ""; }} onChange={(event) => event.target.files && addFiles(event.target.files)} /><Paperclip size={22} aria-hidden="true" /></label>
             <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); sendText(); } }} maxLength={1000} placeholder={isPublicChat ? "发送一条公共消息…" : activePeer ? activePeer.online ? `发消息给 ${activePeer.name}…` : "设备已离线，可查看历史记录" : "先在左侧选择设备"} disabled={!canSend} aria-label="聊天消息" />
             <button type="button" onClick={sendText} disabled={!draft.trim() || !canSend}><Send size={18} /> 发送</button>
           </div>

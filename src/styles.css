@@ -148,3 +148,8 @@ button { cursor: pointer; }
 .host-delete-button:disabled, .host-clear-button:disabled { opacity: .45; cursor: default; }
 .library-card-info .host-delete-button { color: #ad4d43; }
 @media (max-width: 600px) { .host-clear-button span { display: none; } .host-clear-button { margin-left: 0; } }
+
+.composer label { position: relative; }
+.composer label input { display: block; position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.composer label:focus-within { outline: 2px solid #369b6b; outline-offset: 2px; }
+.composer label:has(input:disabled) { opacity: .5; }
